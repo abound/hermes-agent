@@ -266,9 +266,6 @@ class HonchoClientConfig:
     # "context" — auto-injected context only, Honcho tools removed
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
-    # Eager init in tools mode — when true, initializes session during
-    # initialize() instead of deferring to first tool call
-    init_on_session_start: bool = False
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -475,11 +472,6 @@ class HonchoClientConfig:
                 host_block.get("recallMode")
                 or raw.get("recallMode")
                 or "hybrid"
-            ),
-            init_on_session_start=_resolve_bool(
-                host_block.get("initOnSessionStart"),
-                raw.get("initOnSessionStart"),
-                default=False,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users

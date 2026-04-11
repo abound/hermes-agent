@@ -145,7 +145,6 @@ ELEVENLABS_API_KEY=***
 - `neutts` → free local/on-device TTS
 - `elevenlabs` → best quality
 - `openai` → good middle ground
-- `mistral` → multilingual, native Opus
 
 ### If you use `hermes setup`
 

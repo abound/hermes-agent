@@ -391,9 +391,8 @@ class TrajectoryCompressor:
                     f"Missing API key. Set {self.config.api_key_env} "
                     f"environment variable.")
             from openai import OpenAI
-            from agent.auxiliary_client import _to_openai_base_url
             self.client = OpenAI(
-                api_key=api_key, base_url=_to_openai_base_url(self.config.base_url))
+                api_key=api_key, base_url=self.config.base_url)
             # AsyncOpenAI is created lazily in _get_async_client() so it
             # binds to the current event loop — avoids "Event loop is closed"
             # when process_directory() is called multiple times (each call
@@ -412,11 +411,10 @@ class TrajectoryCompressor:
         avoiding "Event loop is closed" errors on repeated calls.
         """
         from openai import AsyncOpenAI
-        from agent.auxiliary_client import _to_openai_base_url
         # Always create a fresh client so it binds to the running loop.
         self.async_client = AsyncOpenAI(
             api_key=self._async_client_api_key,
-            base_url=_to_openai_base_url(self.config.base_url),
+            base_url=self.config.base_url,
         )
         return self.async_client
 

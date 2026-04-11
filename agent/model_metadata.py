@@ -131,14 +131,17 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
-    # Qwen — specific model families before the catch-all.
-    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
-    "qwen3-coder-plus": 1000000,  # 1M context
-    "qwen3-coder": 262144,        # 256K context
+    # Qwen
     "qwen": 131072,
-    # MiniMax — official docs: 204,800 context for all models
-    # https://platform.minimax.io/docs/api-reference/text-anthropic-api
-    "minimax": 204800,
+    # MiniMax (lowercase — lookup lowercases model names at line 973)
+    "minimax-m1-256k": 1000000,
+    "minimax-m1-128k": 1000000,
+    "minimax-m1-80k": 1000000,
+    "minimax-m1-40k": 1000000,
+    "minimax-m1": 1000000,
+    "minimax-m2.5": 1048576,
+    "minimax-m2.7": 1048576,
+    "minimax": 1048576,
     # GLM
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
@@ -170,11 +173,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 204800,
-    "XiaomiMiMo/MiMo-V2-Flash": 256000,
-    "mimo-v2-pro": 1000000,
-    "mimo-v2-omni": 256000,
-    "mimo-v2-flash": 256000,
+    "MiniMaxAI/MiniMax-M2.5": 1048576,
+    "XiaomiMiMo/MiMo-V2-Flash": 32768,
+    "mimo-v2-pro": 1048576,
+    "mimo-v2-omni": 1048576,
     "zai-org/GLM-5": 202752,
 }
 

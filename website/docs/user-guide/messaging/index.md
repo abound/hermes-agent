@@ -23,8 +23,8 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
+| Matrix | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| DingTalk | — | — | — | — | — | ✅ | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | WeCom Callback | — | — | — | — | — | — | — |

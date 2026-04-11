@@ -42,7 +42,7 @@ import atexit
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -1112,7 +1112,6 @@ def terminal_tool(
     workdir: Optional[str] = None,
     pty: bool = False,
     notify_on_complete: bool = False,
-    watch_patterns: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1126,7 +1125,6 @@ def terminal_tool(
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, auto-notify the agent when the process exits
-        watch_patterns: List of strings to watch for in background output; fires a notification on first match per pattern. Use ONLY for mid-process signals (errors, readiness markers) that appear before exit. For end-of-run markers use notify_on_complete instead — stacking both produces duplicate, delayed notifications.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1424,10 +1422,32 @@ def terminal_tool(
                             "notify_on_complete": True,
                         })
 
-                # Set watch patterns for output monitoring
-                if watch_patterns and background:
-                    proc_session.watch_patterns = list(watch_patterns)
-                    result_data["watch_patterns"] = proc_session.watch_patterns
+                # Register check_interval watcher (gateway picks this up after agent run)
+                if check_interval and background:
+                    effective_interval = max(30, check_interval)
+                    if check_interval < 30:
+                        result_data["check_interval_note"] = (
+                            f"Requested {check_interval}s raised to minimum 30s"
+                        )
+                    from gateway.session_context import get_session_env as _gse2
+                    watcher_platform = _gse2("HERMES_SESSION_PLATFORM", "")
+                    watcher_chat_id = _gse2("HERMES_SESSION_CHAT_ID", "")
+                    watcher_thread_id = _gse2("HERMES_SESSION_THREAD_ID", "")
+
+                    # Store on session for checkpoint persistence
+                    proc_session.watcher_platform = watcher_platform
+                    proc_session.watcher_chat_id = watcher_chat_id
+                    proc_session.watcher_thread_id = watcher_thread_id
+                    proc_session.watcher_interval = effective_interval
+
+                    process_registry.pending_watchers.append({
+                        "session_id": proc_session.id,
+                        "check_interval": effective_interval,
+                        "session_key": session_key,
+                        "platform": watcher_platform,
+                        "chat_id": watcher_chat_id,
+                        "thread_id": watcher_thread_id,
+                    })
 
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
@@ -1720,11 +1740,6 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
                 "default": False
-            },
-            "watch_patterns": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Strings to watch for in background process output. Fires a notification the first time each pattern matches a line of output. **Use ONLY for mid-process signals** you want to react to before the process exits — errors, readiness markers, intermediate step markers (e.g. [\"ERROR\", \"Traceback\", \"listening on port\"]). Do NOT use for end-of-run markers (summary headers, 'DONE', 'PASS' printed right before exit) — use `notify_on_complete` for that instead. Stacking end-of-run patterns on top of `notify_on_complete` produces duplicate, delayed notifications that arrive after you've already moved on, since delivery is asynchronous and continues after the process exits."
             }
         },
         "required": ["command"]
@@ -1741,7 +1756,6 @@ def _handle_terminal(args, **kw):
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
-        watch_patterns=args.get("watch_patterns"),
     )
 
 

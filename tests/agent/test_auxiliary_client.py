@@ -1,10 +1,9 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import json
-import logging
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -15,7 +14,6 @@ from agent.auxiliary_client import (
     resolve_provider_client,
     auxiliary_max_tokens_param,
     call_llm,
-    async_call_llm,
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
@@ -589,8 +587,36 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 402
         return exc
 
+    def test_402_triggers_fallback(self, monkeypatch):
+        """When the primary provider returns 402, call_llm tries the next one."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_402_error()
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "gpt-5.2-codex", "openai-codex")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once_with("openrouter", "compression")
+        # Fallback call should use the fallback model
+        fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
+        assert fb_kwargs["model"] == "gpt-5.2-codex"
+
     def test_non_payment_error_not_caught(self, monkeypatch):
-        """Non-payment/non-connection errors (500) should NOT trigger fallback."""
+        """Non-payment errors (500, connection, etc.) should NOT trigger fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
@@ -601,12 +627,32 @@ class TestCallLlmPaymentFallback:
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
-                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)):
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)):
             with pytest.raises(Exception, match="Internal Server Error"):
                 call_llm(
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_402_with_no_fallback_reraises(self, monkeypatch):
+        """When 402 hits and no fallback is available, the original error propagates."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_402_error()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(None, None, "")):
+            with pytest.raises(Exception, match="insufficient credits"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
 
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
@@ -648,333 +694,3 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 
     assert "anthropic" not in called, \
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
-
-
-# ---------------------------------------------------------------------------
-# model="default" elimination (#7512)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _try_payment_fallback reason parameter (#7512 bug 3)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _is_connection_error coverage
-# ---------------------------------------------------------------------------
-
-
-class TestIsConnectionError:
-    """Tests for _is_connection_error detection."""
-
-    def test_connection_refused(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Connection refused")
-        assert _is_connection_error(err) is True
-
-    def test_timeout(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Request timed out.")
-        assert _is_connection_error(err) is True
-
-    def test_dns_failure(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Name or service not known")
-        assert _is_connection_error(err) is True
-
-    def test_normal_api_error_not_connection(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Bad Request: invalid model")
-        err.status_code = 400
-        assert _is_connection_error(err) is False
-
-    def test_500_not_connection(self):
-        from agent.auxiliary_client import _is_connection_error
-        err = Exception("Internal Server Error")
-        err.status_code = 500
-        assert _is_connection_error(err) is False
-
-
-class TestKimiForCodingTemperature:
-    """Moonshot kimi-for-coding models require fixed temperatures.
-
-    k2.5 / k2-turbo-preview / k2-0905-preview → 0.6 (non-thinking lock).
-    k2-thinking / k2-thinking-turbo → 1.0 (thinking lock).
-    kimi-k2-instruct* and every other model preserve the caller's temperature.
-    """
-
-    def test_build_call_kwargs_forces_fixed_temperature(self):
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model="kimi-for-coding",
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.3,
-        )
-
-        assert kwargs["temperature"] == 0.6
-
-    def test_build_call_kwargs_injects_temperature_when_missing(self):
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model="kimi-for-coding",
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=None,
-        )
-
-        assert kwargs["temperature"] == 0.6
-
-    def test_auto_routed_kimi_for_coding_sync_call_uses_fixed_temperature(self):
-        client = MagicMock()
-        client.base_url = "https://api.kimi.com/coding/v1"
-        response = MagicMock()
-        client.chat.completions.create.return_value = response
-
-        with patch(
-            "agent.auxiliary_client._get_cached_client",
-            return_value=(client, "kimi-for-coding"),
-        ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
-            return_value=("auto", "kimi-for-coding", None, None, None),
-        ):
-            result = call_llm(
-                task="session_search",
-                messages=[{"role": "user", "content": "hello"}],
-                temperature=0.1,
-            )
-
-        assert result is response
-        kwargs = client.chat.completions.create.call_args.kwargs
-        assert kwargs["model"] == "kimi-for-coding"
-        assert kwargs["temperature"] == 0.6
-
-    @pytest.mark.asyncio
-    async def test_auto_routed_kimi_for_coding_async_call_uses_fixed_temperature(self):
-        client = MagicMock()
-        client.base_url = "https://api.kimi.com/coding/v1"
-        response = MagicMock()
-        client.chat.completions.create = AsyncMock(return_value=response)
-
-        with patch(
-            "agent.auxiliary_client._get_cached_client",
-            return_value=(client, "kimi-for-coding"),
-        ), patch(
-            "agent.auxiliary_client._resolve_task_provider_model",
-            return_value=("auto", "kimi-for-coding", None, None, None),
-        ):
-            result = await async_call_llm(
-                task="session_search",
-                messages=[{"role": "user", "content": "hello"}],
-                temperature=0.1,
-            )
-
-        assert result is response
-        kwargs = client.chat.completions.create.call_args.kwargs
-        assert kwargs["model"] == "kimi-for-coding"
-        assert kwargs["temperature"] == 0.6
-
-    @pytest.mark.parametrize(
-        "model,expected",
-        [
-            ("kimi-k2.5", 0.6),
-            ("kimi-k2-turbo-preview", 0.6),
-            ("kimi-k2-0905-preview", 0.6),
-            ("kimi-k2-thinking", 1.0),
-            ("kimi-k2-thinking-turbo", 1.0),
-            ("moonshotai/kimi-k2.5", 0.6),
-            ("moonshotai/Kimi-K2-Thinking", 1.0),
-        ],
-    )
-    def test_kimi_k2_family_temperature_override(self, model, expected):
-        """Moonshot kimi-k2.* models only accept fixed temperatures.
-
-        Non-thinking models → 0.6, thinking-mode models → 1.0.
-        """
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="kimi-coding",
-            model=model,
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.3,
-        )
-
-        assert kwargs["temperature"] == expected
-
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "anthropic/claude-sonnet-4-6",
-            "gpt-5.4",
-            # kimi-k2-instruct is the non-coding K2 family — temperature is
-            # variable (recommended 0.6 but not enforced).  Must not clamp.
-            "kimi-k2-instruct",
-            "moonshotai/Kimi-K2-Instruct",
-            "moonshotai/Kimi-K2-Instruct-0905",
-            "kimi-k2-instruct-0905",
-            # Hypothetical future kimi name not in the whitelist.
-            "kimi-k2-experimental",
-        ],
-    )
-    def test_non_restricted_model_preserves_temperature(self, model):
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            provider="openrouter",
-            model=model,
-            messages=[{"role": "user", "content": "hello"}],
-            temperature=0.3,
-        )
-
-        assert kwargs["temperature"] == 0.3
-
-
-# ---------------------------------------------------------------------------
-# async_call_llm payment / connection fallback (#7512 bug 2)
-# ---------------------------------------------------------------------------
-
-
-class TestStaleBaseUrlWarning:
-    """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
-
-    def test_warns_when_openai_base_url_set_with_named_provider(self, monkeypatch, caplog):
-        """Warning fires when OPENAI_BASE_URL is set but provider is a named provider."""
-        import agent.auxiliary_client as mod
-        # Reset the module-level flag so the warning fires
-        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-
-        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
-             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
-            _resolve_auto()
-
-        assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
-            "Expected a warning about stale OPENAI_BASE_URL"
-        assert mod._stale_base_url_warned is True
-
-    def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
-        """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
-        import agent.auxiliary_client as mod
-        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-
-        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
-             patch("agent.auxiliary_client._resolve_custom_runtime",
-                   return_value=("http://localhost:11434/v1", "test-key", None)), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai, \
-             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
-            mock_openai.return_value = MagicMock()
-            _resolve_auto()
-
-        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
-            "Should NOT warn when provider is 'custom'"
-
-    def test_no_warning_when_provider_is_named_custom(self, monkeypatch, caplog):
-        """No warning when the provider is 'custom:myname' — base_url comes from config."""
-        import agent.auxiliary_client as mod
-        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-
-        with patch("agent.auxiliary_client._read_main_provider", return_value="custom:ollama-local"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
-             patch("agent.auxiliary_client.resolve_provider_client",
-                   return_value=(MagicMock(), "llama3")), \
-             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
-            _resolve_auto()
-
-        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
-            "Should NOT warn when provider is 'custom:*'"
-
-    def test_no_warning_when_openai_base_url_not_set(self, monkeypatch, caplog):
-        """No warning when OPENAI_BASE_URL is absent."""
-        import agent.auxiliary_client as mod
-        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-
-        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
-             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
-             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
-            _resolve_auto()
-
-        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
-            "Should NOT warn when OPENAI_BASE_URL is not set"
-
-# ---------------------------------------------------------------------------
-# Anthropic-compatible image block conversion
-# ---------------------------------------------------------------------------
-
-class TestAnthropicCompatImageConversion:
-    """Tests for _is_anthropic_compat_endpoint and _convert_openai_images_to_anthropic."""
-
-    def test_known_providers_detected(self):
-        from agent.auxiliary_client import _is_anthropic_compat_endpoint
-        assert _is_anthropic_compat_endpoint("minimax", "")
-        assert _is_anthropic_compat_endpoint("minimax-cn", "")
-
-    def test_openrouter_not_detected(self):
-        from agent.auxiliary_client import _is_anthropic_compat_endpoint
-        assert not _is_anthropic_compat_endpoint("openrouter", "")
-        assert not _is_anthropic_compat_endpoint("anthropic", "")
-
-    def test_url_based_detection(self):
-        from agent.auxiliary_client import _is_anthropic_compat_endpoint
-        assert _is_anthropic_compat_endpoint("custom", "https://api.minimax.io/anthropic")
-        assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
-        assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
-
-    def test_base64_image_converted(self):
-        from agent.auxiliary_client import _convert_openai_images_to_anthropic
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "describe"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR="}}
-            ]
-        }]
-        result = _convert_openai_images_to_anthropic(messages)
-        img_block = result[0]["content"][1]
-        assert img_block["type"] == "image"
-        assert img_block["source"]["type"] == "base64"
-        assert img_block["source"]["media_type"] == "image/png"
-        assert img_block["source"]["data"] == "iVBOR="
-
-    def test_url_image_converted(self):
-        from agent.auxiliary_client import _convert_openai_images_to_anthropic
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
-            ]
-        }]
-        result = _convert_openai_images_to_anthropic(messages)
-        img_block = result[0]["content"][0]
-        assert img_block["type"] == "image"
-        assert img_block["source"]["type"] == "url"
-        assert img_block["source"]["url"] == "https://example.com/img.jpg"
-
-    def test_text_only_messages_unchanged(self):
-        from agent.auxiliary_client import _convert_openai_images_to_anthropic
-        messages = [{"role": "user", "content": "Hello"}]
-        result = _convert_openai_images_to_anthropic(messages)
-        assert result[0] is messages[0]  # same object, not copied
-
-    def test_jpeg_media_type_parsed(self):
-        from agent.auxiliary_client import _convert_openai_images_to_anthropic
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/="}}
-            ]
-        }]
-        result = _convert_openai_images_to_anthropic(messages)
-        assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"

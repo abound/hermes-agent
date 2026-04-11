@@ -538,59 +538,6 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
-def _parse_session_key(session_key: str) -> "dict | None":
-    """Parse a session key into its component parts.
-
-    Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
-    Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
-    optionally ``thread_id`` keys, or None if the key doesn't match.
-
-    The 6th element is only returned as ``thread_id`` for chat types where
-    it is unambiguous (``dm`` and ``thread``).  For group/channel sessions
-    the suffix may be a user_id (per-user isolation) rather than a
-    thread_id, so we leave ``thread_id`` out to avoid mis-routing.
-    """
-    parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
-        result = {
-            "platform": parts[2],
-            "chat_type": parts[3],
-            "chat_id": parts[4],
-        }
-        if len(parts) > 5 and parts[3] in ("dm", "thread"):
-            result["thread_id"] = parts[5]
-        return result
-    return None
-
-
-def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
-    evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[SYSTEM: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    return None
-
-
 class GatewayRunner:
     """
     Main gateway controller.
@@ -857,7 +804,6 @@ class GatewayRunner:
     def _flush_memories_for_session(
         self,
         old_session_id: str,
-        session_key: Optional[str] = None,
     ):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -876,11 +822,14 @@ class GatewayRunner:
                 return
 
             from run_agent import AIAgent
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
-                session_key=session_key,
-            )
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 return
+
+            # Resolve model from config — AIAgent's default is OpenRouter-
+            # formatted ("anthropic/claude-opus-4.6") which fails when the
+            # active provider is openai-codex.
+            model = _resolve_gateway_model()
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
@@ -964,7 +913,6 @@ class GatewayRunner:
     async def _async_flush_memories(
         self,
         old_session_id: str,
-        session_key: Optional[str] = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_running_loop()
@@ -972,7 +920,6 @@ class GatewayRunner:
             None,
             self._flush_memories_for_session,
             old_session_id,
-            session_key,
         )
 
     @property
@@ -1006,80 +953,6 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
-
-    def _resolve_session_agent_runtime(
-        self,
-        *,
-        source: Optional[SessionSource] = None,
-        session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
-    ) -> tuple[str, dict]:
-        """Resolve model/runtime for a session, honoring session-scoped /model overrides.
-
-        If the session override already contains a complete provider bundle
-        (provider/api_key/base_url/api_mode), prefer it directly instead of
-        resolving fresh global runtime state first.
-        """
-        resolved_session_key = session_key
-        if not resolved_session_key and source is not None:
-            try:
-                resolved_session_key = self._session_key_for_source(source)
-            except Exception:
-                resolved_session_key = None
-
-        model = _resolve_gateway_model(user_config)
-        override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
-        if override:
-            override_model = override.get("model", model)
-            override_runtime = {
-                "provider": override.get("provider"),
-                "api_key": override.get("api_key"),
-                "base_url": override.get("base_url"),
-                "api_mode": override.get("api_mode"),
-            }
-            if override_runtime.get("api_key"):
-                logger.debug(
-                    "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
-                    (resolved_session_key or "")[:30], model, override_model,
-                    override_runtime.get("provider"),
-                )
-                return override_model, override_runtime
-            # Override exists but has no api_key — fall through to env-based
-            # resolution and apply model/provider from the override on top.
-            logger.debug(
-                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
-                (resolved_session_key or "")[:30], model, override_model,
-            )
-        else:
-            logger.debug(
-                "No session model override: session=%s config_model=%s override_keys=%s",
-                (resolved_session_key or "")[:30], model,
-                list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
-            )
-
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
-        if override and resolved_session_key:
-            model, runtime_kwargs = self._apply_session_model_override(
-                resolved_session_key, model, runtime_kwargs
-            )
-
-        # When the config has no model.default but a provider was resolved
-        # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
-        # fall back to the provider's first catalog model so the API call
-        # doesn't fail with "model must be a non-empty string".
-        if not model and runtime_kwargs.get("provider"):
-            try:
-                from hermes_cli.models import get_default_model_for_provider
-                model = get_default_model_for_provider(runtime_kwargs["provider"])
-                if model:
-                    logger.info(
-                        "No model configured — defaulting to %s for provider %s",
-                        model, runtime_kwargs["provider"],
-                    )
-            except Exception:
-                pass
-
-        return model, runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -2213,7 +2086,7 @@ class GatewayRunner:
 
                 for key, entry in _expired_entries:
                     try:
-                        await self._async_flush_memories(entry.session_id, key)
+                        await self._async_flush_memories(entry.session_id)
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.
@@ -3985,7 +3858,6 @@ class GatewayRunner:
             _hyg_provider = None
             _hyg_base_url = None
             _hyg_api_key = None
-            _hyg_data = {}
             try:
                 _hyg_cfg_path = _hermes_home / "config.yaml"
                 if _hyg_cfg_path.exists():
@@ -4020,17 +3892,15 @@ class GatewayRunner:
                             _comp_cfg.get("enabled", True)
                         ).lower() in ("true", "1", "yes")
 
-                try:
-                    _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
-                        source=source,
-                        session_key=session_key,
-                        user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
-                    )
-                    _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
-                    _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
-                    _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
-                except Exception:
-                    pass
+                # Resolve provider/base_url from runtime if not in config
+                if not _hyg_provider or not _hyg_base_url:
+                    try:
+                        _hyg_runtime = _resolve_runtime_agent_kwargs()
+                        _hyg_provider = _hyg_provider or _hyg_runtime.get("provider")
+                        _hyg_base_url = _hyg_base_url or _hyg_runtime.get("base_url")
+                        _hyg_api_key = _hyg_runtime.get("api_key")
+                    except Exception:
+                        pass
 
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).
@@ -4122,11 +3992,7 @@ class GatewayRunner:
                     try:
                         from run_agent import AIAgent
 
-                        _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
-                            source=source,
-                            session_key=session_key,
-                            user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
-                        )
+                        _hyg_runtime = _resolve_runtime_agent_kwargs()
                         if _hyg_runtime.get("api_key"):
                             _hyg_msgs = [
                                 {"role": m.get("role"), "content": m.get("content")}
@@ -4424,29 +4290,6 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
-            # Drain watch pattern notifications that arrived during the agent run.
-            # Watch events and completions share the same queue; completions are
-            # already handled by the per-process watcher task above, so we only
-            # inject watch-type events here.
-            try:
-                from tools.process_registry import process_registry as _pr
-                _watch_events = []
-                while not _pr.completion_queue.empty():
-                    evt = _pr.completion_queue.get_nowait()
-                    evt_type = evt.get("type", "completion")
-                    if evt_type in ("watch_match", "watch_disabled"):
-                        _watch_events.append(evt)
-                    # else: completion events are handled by the watcher task
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
-                        try:
-                            await self._inject_watch_notification(synth_text, evt)
-                        except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
-            except Exception as e:
-                logger.debug("Watch queue drain error: %s", e)
-
             # NOTE: Dangerous command approvals are now handled inline by the
             # blocking gateway approval mechanism in tools/approval.py.  The agent
             # thread blocks until the user responds with /approve or /deny, so by
@@ -4564,12 +4407,7 @@ class GatewayRunner:
             # post-processing in _process_message_background is skipped
             # when already_sent is True, so media files would never be
             # delivered without this.
-            #
-            # Never skip when the agent failed — the error message is new
-            # content the user hasn't seen (streaming only sent earlier
-            # partial output before the failure).  Without this guard,
-            # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
+            if agent_result.get("already_sent"):
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -4734,7 +4572,7 @@ class GatewayRunner:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 _flush_task = asyncio.create_task(
-                    self._async_flush_memories(old_entry.session_id, session_key)
+                    self._async_flush_memories(old_entry.session_id)
                 )
                 self._background_tasks.add(_flush_task)
                 _flush_task.add_done_callback(self._background_tasks.discard)
@@ -6284,11 +6122,7 @@ class GatewayRunner:
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
-            user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source,
-                user_config=user_config,
-            )
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
@@ -6297,6 +6131,8 @@ class GatewayRunner:
                 )
                 return
 
+            user_config = _load_gateway_config()
+            model = _resolve_gateway_model(user_config)
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
@@ -6457,12 +6293,7 @@ class GatewayRunner:
         _thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
-            user_config = _load_gateway_config()
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source,
-                session_key=session_key,
-                user_config=user_config,
-            )
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
@@ -6471,6 +6302,8 @@ class GatewayRunner:
                 )
                 return
 
+            user_config = _load_gateway_config()
+            model = _resolve_gateway_model(user_config)
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
             self._service_tier = self._load_service_tier()
@@ -6827,13 +6660,12 @@ class GatewayRunner:
             from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_messages_tokens_rough
 
-            session_key = self._session_key_for_source(source)
-            model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source,
-                session_key=session_key,
-            )
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 return "No provider configured -- cannot compress."
+
+            # Resolve model from config (same reason as memory flush above).
+            model = _resolve_gateway_model()
 
             msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
@@ -7001,7 +6833,7 @@ class GatewayRunner:
         # Flush memories for current session before switching
         try:
             _flush_task = asyncio.create_task(
-                self._async_flush_memories(current_entry.session_id, session_key)
+                self._async_flush_memories(current_entry.session_id)
             )
             self._background_tasks.add(_flush_task)
             _flush_task.add_done_callback(self._background_tasks.discard)
@@ -8106,102 +7938,6 @@ class GatewayRunner:
                 return f"{prefix}\n\n{user_text}"
             return prefix
         return user_text
-
-    def _build_process_event_source(self, evt: dict):
-        """Resolve the canonical source for a synthetic background-process event.
-
-        Prefer the persisted session-store origin for the event's session key.
-        Falling back to the currently active foreground event is what causes
-        cross-topic bleed, so don't do that.
-        """
-        from gateway.session import SessionSource
-
-        session_key = str(evt.get("session_key") or "").strip()
-        derived_platform = ""
-        derived_chat_type = ""
-        derived_chat_id = ""
-
-        if session_key:
-            try:
-                self.session_store._ensure_loaded()
-                entry = self.session_store._entries.get(session_key)
-                if entry and getattr(entry, "origin", None):
-                    return entry.origin
-            except Exception as exc:
-                logger.debug(
-                    "Synthetic process-event session-store lookup failed for %s: %s",
-                    session_key,
-                    exc,
-                )
-
-            _parsed = _parse_session_key(session_key)
-            if _parsed:
-                derived_platform = _parsed["platform"]
-                derived_chat_type = _parsed["chat_type"]
-                derived_chat_id = _parsed["chat_id"]
-
-        platform_name = str(evt.get("platform") or derived_platform or "").strip().lower()
-        chat_type = str(evt.get("chat_type") or derived_chat_type or "").strip().lower()
-        chat_id = str(evt.get("chat_id") or derived_chat_id or "").strip()
-        if not platform_name or not chat_type or not chat_id:
-            return None
-
-        try:
-            platform = Platform(platform_name)
-        except Exception:
-            logger.warning(
-                "Synthetic process event has invalid platform metadata: %r",
-                platform_name,
-            )
-            return None
-
-        return SessionSource(
-            platform=platform,
-            chat_id=chat_id,
-            chat_type=chat_type,
-            thread_id=str(evt.get("thread_id") or "").strip() or None,
-            user_id=str(evt.get("user_id") or "").strip() or None,
-            user_name=str(evt.get("user_name") or "").strip() or None,
-        )
-
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
-
-        Routing must come from the queued watch event itself, not from whatever
-        foreground message happened to be active when the queue was drained.
-        """
-        source = self._build_process_event_source(evt)
-        if not source:
-            logger.warning(
-                "Dropping watch notification with no routing metadata for process %s",
-                evt.get("session_id", "unknown"),
-            )
-            return
-        platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        adapter = None
-        for p, a in self.adapters.items():
-            if p.value == platform_name:
-                adapter = a
-                break
-        if not adapter:
-            return
-        try:
-            from gateway.platforms.base import MessageEvent, MessageType
-            synth_event = MessageEvent(
-                text=synth_text,
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
-            logger.info(
-                "Watch pattern notification — injecting for %s chat=%s thread=%s",
-                platform_name,
-                source.chat_id,
-                source.thread_id,
-            )
-            await adapter.handle_message(synth_event)
-        except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
@@ -9381,16 +9117,10 @@ class GatewayRunner:
             except Exception:
                 pass
 
+            model = _resolve_gateway_model(user_config)
+
             try:
-                model, runtime_kwargs = self._resolve_session_agent_runtime(
-                    source=source,
-                    session_key=session_key,
-                    user_config=user_config,
-                )
-                logger.debug(
-                    "run_agent resolved: model=%s provider=%s session=%s",
-                    model, runtime_kwargs.get("provider"), (session_key or "")[:30],
-                )
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -9398,6 +9128,11 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # /model overrides take precedence over config.yaml defaults.
+            model, runtime_kwargs = self._apply_session_model_override(
+                session_key, model, runtime_kwargs
+            )
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
@@ -10497,35 +10232,9 @@ class GatewayRunner:
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
-        # BUT: never suppress delivery when the agent failed — the error
-        # message is new content the user hasn't seen, and it must reach
-        # them even if streaming had sent earlier partial output.
-        #
-        # Also never suppress when the final response is "(empty)" — this
-        # means the model failed to produce content after tool calls (common
-        # with mimo-v2-pro, GLM-5, etc.).  The stream consumer may have
-        # sent intermediate text ("Let me search for that…") alongside the
-        # tool call, setting already_sent=True, but that text is NOT the
-        # final answer.  Suppressing delivery here leaves the user staring
-        # at silence.  (#10xxx — "agent stops after web search")
         _sc = stream_consumer_holder[0]
-        if isinstance(response, dict) and not response.get("failed"):
-            _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
-            _streamed = bool(
-                _sc and getattr(_sc, "final_response_sent", False)
-            )
-            # response_previewed means the interim_assistant_callback already
-            # sent the final text via the adapter (non-streaming path).
-            _previewed = bool(response.get("response_previewed"))
-            if not _is_empty_sentinel and (_streamed or _previewed):
-                logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s).",
-                    session_key[:20] if session_key else "?",
-                    _streamed,
-                    _previewed,
-                )
-                response["already_sent"] = True
+        if _sc and _sc.already_sent and isinstance(response, dict):
+            response["already_sent"] = True
         
         return response
 

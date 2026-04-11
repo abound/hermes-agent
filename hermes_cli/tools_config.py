@@ -163,24 +163,6 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "elevenlabs",
             },
-            {
-                "name": "Mistral (Voxtral TTS)",
-                "badge": "paid",
-                "tag": "Multilingual, native Opus",
-                "env_vars": [
-                    {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/"},
-                ],
-                "tts_provider": "mistral",
-            },
-            {
-                "name": "Google Gemini TTS",
-                "badge": "preview",
-                "tag": "30 prebuilt voices, controllable via prompts",
-                "env_vars": [
-                    {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
-                ],
-                "tts_provider": "gemini",
-            },
         ],
     },
     "web": {
@@ -519,10 +501,6 @@ def _get_platform_tools(
         default_ts = PLATFORMS[platform]["default_toolset"]
         toolset_names = [default_ts]
 
-    # YAML may parse bare numeric names (e.g. ``12306:``) as int.
-    # Normalise to str so downstream sorted() never mixes types.
-    toolset_names = [str(ts) for ts in toolset_names]
-
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     # If the saved list contains any configurable keys directly, the user
@@ -581,7 +559,7 @@ def _get_platform_tools(
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
     mcp_servers = config.get("mcp_servers") or {}
     enabled_mcp_servers = {
-        str(name)
+        name
         for name, server_cfg in mcp_servers.items()
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
