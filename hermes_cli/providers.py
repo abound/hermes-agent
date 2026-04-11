@@ -88,11 +88,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="KIMI_BASE_URL",
     ),
     "minimax": HermesOverlay(
-        transport="anthropic_messages",
+        transport="openai_chat",
         base_url_env_var="MINIMAX_BASE_URL",
     ),
     "minimax-cn": HermesOverlay(
-        transport="anthropic_messages",
+        transport="openai_chat",
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
     "deepseek": HermesOverlay(
