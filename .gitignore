@@ -4,6 +4,8 @@
 __pycache__/
 .venv/
 .vscode/
+.idea/
+.DS_Store
 .env
 .env.local
 .env.development.local
@@ -63,3 +65,5 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+# Added by code-review-graph
+.code-review-graph/

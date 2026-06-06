@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
-# Patterns for sanitizing skill names into clean hyphen-separated slugs.
+# 用于把技能名清洗为连字符 slug 的正则模式
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
@@ -45,7 +45,7 @@ def build_plan_path(
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
-    """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+    """按名称或路径加载技能，返回 (loaded_payload, skill_dir, display_name)。"""
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
         return None
@@ -103,7 +103,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
             resolve_skill_config_values,
         )
 
-        # The loaded_skill dict contains the raw content which includes frontmatter
+        # loaded_skill 中的 raw_content 包含完整 frontmatter 与正文
         raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
         if not raw_content:
             return
@@ -124,7 +124,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         lines.append("]")
         parts.extend(lines)
     except Exception:
-        pass  # Non-critical — skill still loads without config injection
+        pass  # 非关键失败：即使配置注入失败，技能仍可正常加载
 
 
 def _build_skill_message(
@@ -134,14 +134,14 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
 ) -> str:
-    """Format a loaded skill into a user/system message payload."""
+    """将已加载技能格式化为可注入的消息内容（用户/系统层）。"""
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
     parts = [activation_note, "", content.strip()]
 
-    # ── Inject resolved skill config values ──
+    # ── 注入解析后的技能配置值 ──
     _inject_skill_config(loaded_skill, parts)
 
     if loaded_skill.get("setup_skipped"):
@@ -185,7 +185,7 @@ def _build_skill_message(
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
-            # Skill is from an external dir — use the skill name instead
+            # 外部目录技能无法相对本地 SKILLS_DIR 取路径时，回退为技能名
             skill_view_target = skill_dir.name
         parts.append("")
         parts.append("[This skill has supporting files you can load with the skill_view tool:]")
@@ -207,10 +207,11 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
+    """扫描 ~/.hermes/skills/ 并返回 `/命令 -> 技能信息` 映射。
 
-    Returns:
-        Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
+    返回：
+        Dict，键为 `/skill-name`，值包含
+        `{name, description, skill_md_path, skill_dir}`。
     """
     global _skill_commands
     _skill_commands = {}
@@ -220,7 +221,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
+        # 先扫描本地目录，再扫描外部目录
         dirs_to_scan = []
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
@@ -233,13 +234,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 try:
                     content = skill_md.read_text(encoding='utf-8')
                     frontmatter, body = _parse_frontmatter(content)
-                    # Skip skills incompatible with the current OS platform
+                    # 跳过与当前平台不兼容的技能
                     if not skill_matches_platform(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:
                         continue
-                    # Respect user's disabled skills config
+                    # 尊重用户配置中的禁用技能列表
                     if name in disabled:
                         continue
                     description = frontmatter.get('description', '')
@@ -250,9 +251,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
-                    # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
+                    # 归一化为连字符 slug，去掉非字母数字字符，
+                    # 避免下游平台（如 Telegram）命令名非法。
                     cmd_name = name.lower().replace(' ', '-').replace('_', '-')
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
@@ -272,7 +272,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
+    """返回当前技能命令映射（为空时先执行扫描）。"""
     if not _skill_commands:
         scan_skill_commands()
     return _skill_commands

@@ -44,8 +44,7 @@ from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Import security scanner — agent-created skills get the same scrutiny as
-# community hub installs.
+# 导入安全扫描器：代理创建的技能与社区安装技能执行同等级审查。
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -73,10 +72,10 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
-import yaml
+import yaml  # 用于解析与校验 SKILL.md 的 YAML frontmatter，确保技能元信息结构正确
 
 
-# All skills live in ~/.hermes/skills/ (single source of truth)
+# 所有技能统一存放在 ~/.hermes/skills/（单一事实来源）
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
@@ -97,15 +96,15 @@ def _is_local_skill(skill_path: Path) -> bool:
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
-# Characters allowed in skill names (filesystem-safe, URL-friendly)
+# 技能名称允许字符（文件系统安全、URL 友好）
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
-# Subdirectories allowed for write_file/remove_file
+# write_file/remove_file 允许操作的子目录白名单
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
 # =============================================================================
-# Validation helpers
+# 校验辅助函数
 # =============================================================================
 
 def _validate_name(name: str) -> Optional[str]:
@@ -509,7 +508,7 @@ def _delete_skill(name: str) -> Dict[str, Any]:
 
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
-    """Add or overwrite a supporting file within any skill directory."""
+    """在目标技能目录下新增或覆盖附属文件。"""
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -517,7 +516,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not file_content and file_content != "":
         return {"success": False, "error": "file_content is required."}
 
-    # Check size limits
+    # 检查文件大小限制
     content_bytes = len(file_content.encode("utf-8"))
     if content_bytes > MAX_SKILL_FILE_BYTES:
         return {
@@ -543,11 +542,11 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Back up for rollback
+    # 先备份旧内容，便于失败时回滚
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
 
-    # Security scan — roll back on block
+    # 安全扫描：若阻断则恢复到写入前状态
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
@@ -582,7 +581,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
     if not target.exists():
-        # List what's actually there for the model to see
+        # 返回实际存在的文件列表，便于模型自我修正参数
         available = []
         for subdir in ALLOWED_SUBDIRS:
             d = skill_dir / subdir
@@ -598,7 +597,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     target.unlink()
 
-    # Clean up empty subdirectories
+    # 清理空子目录，避免残留无效目录结构
     parent = target.parent
     if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
@@ -610,7 +609,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
 
 # =============================================================================
-# Main entry point
+# 主入口
 # =============================================================================
 
 def skill_manage(
@@ -625,9 +624,9 @@ def skill_manage(
     replace_all: bool = False,
 ) -> str:
     """
-    Manage user-created skills. Dispatches to the appropriate action handler.
+    统一技能管理入口：根据 action 分发到对应处理器。
 
-    Returns JSON string with results.
+    返回值始终为 JSON 字符串，便于工具调用链统一解析。
     """
     if action == "create":
         if not content:
@@ -675,7 +674,7 @@ def skill_manage(
 
 
 # =============================================================================
-# OpenAI Function-Calling Schema
+# OpenAI 函数调用 Schema 定义
 # =============================================================================
 
 SKILL_MANAGE_SCHEMA = {

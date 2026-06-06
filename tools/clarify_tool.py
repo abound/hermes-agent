@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """
-Clarify Tool Module - Interactive Clarifying Questions
+需求澄清工具模块。
 
-Allows the agent to present structured multiple-choice questions or open-ended
-prompts to the user. In CLI mode, choices are navigable with arrow keys. On
-messaging platforms, choices are rendered as a numbered list.
+该模块允许智能体向用户发起结构化多选问题，或开放式补充提问。
+在 CLI 模式下，用户可以用方向键选择选项；在消息平台中，
+选项通常会以编号列表的形式展示。
 
-The actual user-interaction logic lives in the platform layer (cli.py for CLI,
-gateway/run.py for messaging). This module defines the schema, validation, and
-a thin dispatcher that delegates to a platform-provided callback.
+真正的用户交互逻辑位于平台层：
+- CLI 由 `cli.py` 负责
+- 消息平台由 `gateway/run.py` 负责
+
+本模块只负责定义工具 schema、参数校验，以及把问题转交给
+平台层 callback 的轻量分发逻辑。
 """
 
 import json
 from typing import List, Optional, Callable
 
 
-# Maximum number of predefined choices the agent can offer.
-# A 5th "Other (type your answer)" option is always appended by the UI.
+# 智能体最多可提供的预设选项数量。
+# UI 会自动追加第 5 个“其他（手动输入）”选项。
 MAX_CHOICES = 4
 
 
@@ -26,37 +29,36 @@ def clarify_tool(
     callback: Optional[Callable] = None,
 ) -> str:
     """
-    Ask the user a question, optionally with multiple-choice options.
+    向用户提问，可选提供多选项。
 
-    Args:
-        question: The question text to present.
-        choices:  Up to 4 predefined answer choices. When omitted the
-                  question is purely open-ended.
-        callback: Platform-provided function that handles the actual UI
-                  interaction. Signature: callback(question, choices) -> str.
-                  Injected by the agent runner (cli.py / gateway).
+    参数：
+        question：要展示给用户的问题文本。
+        choices：最多 4 个预设答案选项；若省略，则表示纯开放式提问。
+        callback：由平台层提供的实际交互函数。
+                  其签名应为 `callback(question, choices) -> str`。
+                  该回调由 agent 运行层（CLI / gateway）注入。
 
-    Returns:
-        JSON string with the user's response.
+    返回：
+        包含用户回答的 JSON 字符串。
     """
     if not question or not question.strip():
-        return tool_error("Question text is required.")
+        return tool_error("必须提供问题文本。")
 
     question = question.strip()
 
-    # Validate and trim choices
+    # 校验并裁剪选项列表。
     if choices is not None:
         if not isinstance(choices, list):
-            return tool_error("choices must be a list of strings.")
+            return tool_error("choices 必须是字符串列表。")
         choices = [str(c).strip() for c in choices if str(c).strip()]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
-            choices = None  # empty list → open-ended
+            choices = None  # 空列表视为开放式提问
 
     if callback is None:
         return json.dumps(
-            {"error": "Clarify tool is not available in this execution context."},
+            {"error": "当前执行环境不支持 clarify 工具。"},
             ensure_ascii=False,
         )
 
@@ -64,7 +66,7 @@ def clarify_tool(
         user_response = callback(question, choices)
     except Exception as exc:
         return json.dumps(
-            {"error": f"Failed to get user input: {exc}"},
+            {"error": f"获取用户输入失败：{exc}"},
             ensure_ascii=False,
         )
 
@@ -76,7 +78,7 @@ def clarify_tool(
 
 
 def check_clarify_requirements() -> bool:
-    """Clarify tool has no external requirements -- always available."""
+    """clarify 工具没有额外外部依赖，默认始终可用。"""
     return True
 
 
@@ -87,36 +89,34 @@ def check_clarify_requirements() -> bool:
 CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
-        "Ask the user a question when you need clarification, feedback, or a "
-        "decision before proceeding. Supports two modes:\n\n"
-        "1. **Multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option.\n"
-        "2. **Open-ended** — omit choices entirely. The user types a free-form "
-        "response.\n\n"
-        "Use this tool when:\n"
-        "- The task is ambiguous and you need the user to choose an approach\n"
-        "- You want post-task feedback ('How did that work out?')\n"
-        "- You want to offer to save a skill or update memory\n"
-        "- A decision has meaningful trade-offs the user should weigh in on\n\n"
-        "Do NOT use this tool for simple yes/no confirmation of dangerous "
-        "commands (the terminal tool handles that). Prefer making a reasonable "
-        "default choice yourself when the decision is low-stakes."
+        "当你在继续执行前需要向用户澄清需求、收集反馈，或让用户做出决策时，"
+        "使用这个工具。支持两种模式：\n\n"
+        "1. **多选模式**：最多提供 4 个选项。用户可直接选择其中一个，"
+        "或通过第 5 个“其他”选项输入自己的答案。\n"
+        "2. **开放式模式**：完全不提供 choices，用户自由输入文本回答。\n\n"
+        "适用场景：\n"
+        "- 任务存在歧义，需要用户明确选择执行方案\n"
+        "- 任务完成后需要追问反馈（例如“效果怎么样？”）\n"
+        "- 想询问是否保存 skill 或更新 memory\n"
+        "- 某个决策存在明显权衡，应该让用户参与判断\n\n"
+        "不适用场景：\n"
+        "- 危险命令的简单是/否确认，这类确认由 terminal 工具处理\n"
+        "- 低风险小决策，此时更推荐你先做合理默认选择，而不是频繁打断用户"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "question": {
                 "type": "string",
-                "description": "The question to present to the user.",
+                "description": "要展示给用户的问题文本。",
             },
             "choices": {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "Up to 4 answer choices. Omit this parameter entirely to "
-                    "ask an open-ended question. When provided, the UI "
-                    "automatically appends an 'Other (type your answer)' option."
+                    "最多 4 个答案选项。若省略该参数，则表示开放式提问。"
+                    "当提供选项时，UI 会自动追加一个“其他（手动输入）”选项。"
                 ),
             },
         },
@@ -125,7 +125,7 @@ CLARIFY_SCHEMA = {
 }
 
 
-# --- Registry ---
+# --- 注册到工具注册表 ---
 from tools.registry import registry, tool_error
 
 registry.register(

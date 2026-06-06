@@ -25,8 +25,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
-
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
@@ -36,18 +34,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "send_message",    # no cross-platform side effects
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
-
-# Build a description fragment listing toolsets available for subagents.
-# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
-# (hermes-* prefixed), and scenario toolsets.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
-_SUBAGENT_TOOLSETS = sorted(
-    name for name, defn in TOOLSETS.items()
-    if name not in _EXCLUDED_TOOLSET_NAMES
-    and not name.startswith("hermes-")
-    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-)
-_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
@@ -155,7 +141,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, goal: str, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -173,46 +159,14 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
-    goal_label = (goal or "").strip()
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
     _batch: List[str] = []
 
-    def _relay(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        if not parent_cb:
-            return
-        try:
-            parent_cb(
-                event_type,
-                tool_name,
-                preview,
-                args,
-                task_index=task_index,
-                task_count=task_count,
-                goal=goal_label,
-                **kwargs,
-            )
-        except Exception as e:
-            logger.debug("Parent callback failed: %s", e)
-
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent.*"
-
-        if event_type == "subagent.start":
-            if spinner and goal_label:
-                short = (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
-                try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
-                except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
-            _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
-            return
-
-        if event_type == "subagent.complete":
-            _relay("subagent.complete", preview=preview, **kwargs)
-            return
+        # "reasoning.available", "_thinking", "subagent_progress"
 
         # "_thinking" / reasoning events
         if event_type in ("_thinking", "reasoning.available"):
@@ -223,7 +177,7 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            _relay("subagent.thinking", preview=text)
+            # Don't relay thinking to gateway (too noisy for chat)
             return
 
         # tool.completed — no display needed here (spinner shows on started)
@@ -244,18 +198,23 @@ def _build_child_progress_callback(task_index: int, goal: str, parent_agent, tas
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _relay("subagent.tool", tool_name, preview, args)
             _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
-                _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+                try:
+                    parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
+                except Exception as e:
+                    logger.debug("Parent callback failed: %s", e)
                 _batch.clear()
 
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
-            _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
+            try:
+                parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
+            except Exception as e:
+                logger.debug("Parent callback flush failed: %s", e)
             _batch.clear()
 
     _callback._flush = _flush
@@ -269,7 +228,6 @@ def _build_child_agent(
     toolsets: Optional[List[str]],
     model: Optional[str],
     max_iterations: int,
-    task_count: int,
     parent_agent,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
@@ -326,7 +284,7 @@ def _build_child_agent(
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
     # Build progress callback to relay tool calls to parent display
-    child_progress_cb = _build_child_progress_callback(task_index, goal, parent_agent, task_count)
+    child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
@@ -497,12 +455,6 @@ def _run_single_child(
     _heartbeat_thread.start()
 
     try:
-        if child_progress_cb:
-            try:
-                child_progress_cb("subagent.start", preview=goal)
-            except Exception as e:
-                logger.debug("Progress callback start failed: %s", e)
-
         result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
@@ -597,34 +549,11 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
-        if child_progress_cb:
-            try:
-                child_progress_cb(
-                    "subagent.complete",
-                    preview=summary[:160] if summary else entry.get("error", ""),
-                    status=status,
-                    duration_seconds=duration,
-                    summary=summary[:500] if summary else entry.get("error", ""),
-                )
-            except Exception as e:
-                logger.debug("Progress callback completion failed: %s", e)
-
         return entry
 
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
-        if child_progress_cb:
-            try:
-                child_progress_cb(
-                    "subagent.complete",
-                    preview=str(exc),
-                    status="failed",
-                    duration_seconds=duration,
-                    summary=str(exc),
-                )
-            except Exception as e:
-                logger.debug("Progress callback failure relay failed: %s", e)
         return {
             "task_index": task_index,
             "status": "error",
@@ -668,9 +597,8 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
+        # 关闭工具层资源（终端沙箱、浏览器守护进程、后台进程、
+        # httpx 客户端等），避免子代理相关子进程在委托结束后继续残留。
         try:
             if hasattr(child, 'close'):
                 child.close()
@@ -688,110 +616,112 @@ def delegate_task(
     parent_agent=None,
 ) -> str:
     """
-    Spawn one or more child agents to handle delegated tasks.
+    生成一个或多个子代理来处理委托任务。
 
-    Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+    支持两种模式：
+      - 单任务模式：提供 `goal`（可选再补 `context`、`toolsets`）
+      - 批量模式：提供 `tasks` 数组，形如
+        `[{goal, context, toolsets}, ...]`
 
-    Returns JSON with results array, one entry per task.
+    返回：
+        JSON 字符串，其中 `results` 数组的每一项对应一个子任务结果。
     """
     if parent_agent is None:
-        return tool_error("delegate_task requires a parent agent context.")
+        return tool_error("delegate_task 必须在父代理上下文中调用。")
 
-    # Depth limit
+    # 深度限制：禁止无限递归地继续派生子代理。
     depth = getattr(parent_agent, '_delegate_depth', 0)
     if depth >= MAX_DEPTH:
         return json.dumps({
             "error": (
-                f"Delegation depth limit reached ({MAX_DEPTH}). "
-                "Subagents cannot spawn further subagents."
+                f"已达到委托深度上限（{MAX_DEPTH}）。"
+                "子代理不能继续生成新的子代理。"
             )
         })
 
-    # Load config
+    # 读取 delegation 配置。
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    # 解析 delegation 凭据（provider:model 组合）。
+    # 如果配置了 delegation.provider，这里会通过与 CLI / gateway
+    # 启动阶段相同的 runtime provider 系统，解析出完整凭据包
+    # （base_url、api_key、api_mode 等）。
+    # 如果未配置，则返回一组 None，让子代理直接继承父代理配置。
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
 
-    # Normalize to task list
+    # 归一化成统一的任务列表结构。
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(
-                f"Too many tasks: {len(tasks)} provided, but "
-                f"max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
+                f"任务数量过多：当前提供了 {len(tasks)} 个任务，但 "
+                f"max_concurrent_children 仅为 {max_children}。"
+                f"请减少任务数量、拆成多次 delegate_task 调用，或在 "
+                f"config.yaml 中提高 delegation.max_concurrent_children。"
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
-        return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
+        return tool_error("必须提供 `goal`（单任务模式）或 `tasks`（批量模式）其中之一。")
 
     if not task_list:
-        return tool_error("No tasks provided.")
+        return tool_error("没有提供任何任务。")
 
-    # Validate each task has a goal
+    # 校验每个任务都包含 goal。
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
-            return tool_error(f"Task {i} is missing a 'goal'.")
+            return tool_error(f"任务 {i} 缺少 `goal`。")
 
     overall_start = time.monotonic()
     results = []
 
     n_tasks = len(task_list)
-    # Track goal labels for progress display (truncated for readability)
+    # 为进度显示准备任务标签，并适当截断，避免界面过长。
     task_labels = [t["goal"][:40] for t in task_list]
 
-    # Save parent tool names BEFORE any child construction mutates the global.
-    # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
-    # which overwrites model_tools._last_resolved_tool_names with child's toolset.
+    # 在创建子代理前，先保存父代理的工具名列表。
+    # 因为 _build_child_agent() 会实例化 AIAgent()，而 AIAgent()
+    # 内部又会调用 get_tool_definitions()，从而把
+    # model_tools._last_resolved_tool_names 改写成子代理的工具集。
     import model_tools as _model_tools
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
-    # Build all child agents on the main thread (thread-safe construction)
-    # Wrapped in try/finally so the global is always restored even if a
-    # child build raises (otherwise _last_resolved_tool_names stays corrupted).
+    # 在主线程中统一构造全部子代理，确保构造过程线程安全。
+    # 同时用 try/finally 包裹，保证即使某个子代理构造报错，
+    # 也能把全局工具名状态恢复回父代理版本。
     children = []
     try:
         for i, t in enumerate(task_list):
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, task_count=n_tasks, parent_agent=parent_agent,
+                max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
-            # Override with correct parent tool names (before child construction mutated global)
+            # 回填父代理的工具名快照，避免沿用子代理构造过程中改写后的全局状态。
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
     finally:
-        # Authoritative restore: reset global to parent's tool names after all children built
+        # 权威恢复：所有子代理构造完成后，把全局工具名重置回父代理版本。
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
+        # 单任务模式：直接运行，避免额外线程池开销。
         _i, _t, child = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
-        # Batch -- run in parallel with per-task progress lines
+        # 批量模式：并行运行，并在界面上输出每个任务的完成进度。
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
@@ -807,89 +737,49 @@ def delegate_task(
                 )
                 futures[future] = i
 
-            # Poll futures with interrupt checking.  as_completed() blocks
-            # until ALL futures finish — if a child agent gets stuck,
-            # the parent blocks forever even after interrupt propagation.
-            # Instead, use wait() with a short timeout so we can bail
-            # when the parent is interrupted.
-            pending = set(futures.keys())
-            while pending:
-                if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
-                    for f in pending:
-                        idx = futures[f]
-                        if f.done():
-                            try:
-                                entry = f.result()
-                            except Exception as exc:
-                                entry = {
-                                    "task_index": idx,
-                                    "status": "error",
-                                    "summary": None,
-                                    "error": str(exc),
-                                    "api_calls": 0,
-                                    "duration_seconds": 0,
-                                }
-                        else:
-                            entry = {
-                                "task_index": idx,
-                                "status": "interrupted",
-                                "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
-                                "api_calls": 0,
-                                "duration_seconds": 0,
-                            }
-                        results.append(entry)
-                        completed_count += 1
-                    break
+            for future in as_completed(futures):
+                try:
+                    entry = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    entry = {
+                        "task_index": idx,
+                        "status": "error",
+                        "summary": None,
+                        "error": str(exc),
+                        "api_calls": 0,
+                        "duration_seconds": 0,
+                    }
+                results.append(entry)
+                completed_count += 1
 
-                from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
-                done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
-                for future in done:
+                # 在 spinner 上方打印每个子任务的完成提示。
+                idx = entry["task_index"]
+                label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                dur = entry.get("duration_seconds", 0)
+                status = entry.get("status", "?")
+                icon = "✓" if status == "completed" else "✗"
+                remaining = n_tasks - completed_count
+                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                if spinner_ref:
                     try:
-                        entry = future.result()
-                    except Exception as exc:
-                        idx = futures[future]
-                        entry = {
-                            "task_index": idx,
-                            "status": "error",
-                            "summary": None,
-                            "error": str(exc),
-                            "api_calls": 0,
-                            "duration_seconds": 0,
-                        }
-                    results.append(entry)
-                    completed_count += 1
-
-                    # Print per-task completion line above the spinner
-                    idx = entry["task_index"]
-                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                    dur = entry.get("duration_seconds", 0)
-                    status = entry.get("status", "?")
-                    icon = "✓" if status == "completed" else "✗"
-                    remaining = n_tasks - completed_count
-                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                    if spinner_ref:
-                        try:
-                            spinner_ref.print_above(completion_line)
-                        except Exception:
-                            print(f"  {completion_line}")
-                    else:
+                        spinner_ref.print_above(completion_line)
+                    except Exception:
                         print(f"  {completion_line}")
+                else:
+                    print(f"  {completion_line}")
 
-                    # Update spinner text to show remaining count
-                    if spinner_ref and remaining > 0:
-                        try:
-                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
-                        except Exception as e:
-                            logger.debug("Spinner update_text failed: %s", e)
+                # 更新 spinner 文案，显示剩余任务数。
+                if spinner_ref and remaining > 0:
+                    try:
+                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                    except Exception as e:
+                        logger.debug("Spinner update_text failed: %s", e)
 
-        # Sort by task_index so results match input order
+        # 按 task_index 排序，保证返回结果顺序与输入任务顺序一致。
         results.sort(key=lambda r: r["task_index"])
 
-    # Notify parent's memory provider of delegation outcomes
+    # 通知父代理的 memory provider：本次 delegation 的结果如何。
     if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
         for entry in results:
             try:
@@ -911,14 +801,13 @@ def delegate_task(
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
-    """Resolve a credential pool for the child agent.
+    """为子代理解析凭据池。
 
-    Rules:
-    1. Same provider as the parent -> share the parent's pool so cooldown state
-       and rotation stay synchronized.
-    2. Different provider -> try to load that provider's own pool.
-    3. No pool available -> return None and let the child keep the inherited
-       fixed credential behavior.
+    规则如下：
+    1. 如果子代理与父代理使用同一个 provider，则直接共享父代理的池，
+       这样冷却状态与凭据轮换可以保持同步。
+    2. 如果 provider 不同，则尝试加载该 provider 自己的凭据池。
+    3. 如果没有可用凭据池，则返回 None，让子代理继续沿用继承来的固定凭据。
     """
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
@@ -943,19 +832,20 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
-    """Resolve credentials for subagent delegation.
+    """解析子代理 delegation 使用的凭据。
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. Otherwise, if ``delegation.provider`` is
-    configured, the full credential bundle (base_url, api_key, api_mode,
-    provider) is resolved via the runtime provider system — the same path used
-    by CLI/gateway startup. This lets subagents run on a completely different
-    provider:model pair.
+    如果配置了 `delegation.base_url`，子代理会直接使用该
+    OpenAI 兼容接口。
 
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
+    否则，如果配置了 `delegation.provider`，这里会通过 runtime
+    provider 系统解析出完整凭据包（base_url、api_key、api_mode、
+    provider），也就是 CLI / gateway 启动时使用的同一路径。
+    这样就能让子代理跑在与父代理完全不同的一组 provider:model 上。
 
-    Raises ValueError with a user-friendly message on credential failure.
+    如果既没有配置 base_url，也没有配置 provider，则返回一组 None，
+    表示子代理继续继承父代理的全部连接信息。
+
+    凭据解析失败时，会抛出带用户可读信息的 ValueError。
     """
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
@@ -969,8 +859,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
         if not api_key:
             raise ValueError(
-                "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
+                "已配置 delegation.base_url，但没有找到 API key。"
+                "请设置 delegation.api_key 或 OPENAI_API_KEY。"
             )
 
         base_lower = configured_base_url.lower()
@@ -992,7 +882,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        # 未覆盖 provider，子代理直接继承父代理配置。
         return {
             "model": configured_model,
             "provider": None,
@@ -1001,23 +891,25 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": None,
         }
 
-    # Provider is configured — resolve full credentials
+    # 已配置 provider，需要解析出完整凭据包。
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested=configured_provider)
     except Exception as exc:
         raise ValueError(
-            f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
-            f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"无法解析 delegation provider '{configured_provider}'：{exc}。"
+            f"请检查该 provider 是否已正确配置（例如 API key 是否已设置、"
+            f"provider 名称是否有效），或改为直接设置 "
+            f"delegation.base_url / delegation.api_key。"
+            f"当前可用 provider 示例包括：openrouter、nous、zai、"
+            f"kimi-coding、minimax。"
         ) from exc
 
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
-            f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            f"delegation provider '{configured_provider}' 已解析成功，但没有可用 API key。"
+            f"请设置对应环境变量，或运行 `hermes auth`。"
         )
 
     return {
@@ -1032,12 +924,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """从 CLI_CONFIG 或持久化配置中读取 delegation 配置。
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    这里会优先检查运行时配置（`cli.py` 中的 `CLI_CONFIG`），
+    若不存在，再回退到持久化配置（`hermes_cli/config.py` 的 `load_config()`）。
+
+    这样无论入口来自 CLI、gateway 还是 cron，`delegation.model` /
+    `delegation.provider` 等配置都能被统一识别。
     """
     try:
         from cli import CLI_CONFIG
@@ -1061,29 +954,28 @@ def _load_config() -> dict:
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     "description": (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
-        "Only the final summary is returned -- intermediate tool results "
-        "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
-        "All run concurrently and results are returned together.\n\n"
-        "WHEN TO USE delegate_task:\n"
-        "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
-        "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
-        "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
-        "IMPORTANT:\n"
-        "- Subagents have NO memory of your conversation. Pass all relevant "
-        "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
-        "execute_code.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "生成一个或多个子代理，在隔离上下文里处理子任务。"
+        "每个子代理都有独立对话、独立终端会话，以及各自的工具集。"
+        "父代理只会收到最终摘要，中间工具结果不会进入你的上下文窗口。\n\n"
+        "支持两种模式（二选一，必须提供 `goal` 或 `tasks`）：\n"
+        "1. 单任务模式：提供 `goal`（可选补 `context`、`toolsets`）\n"
+        "2. 批量并行模式：提供 `tasks` 数组，最多 3 项；"
+        "所有任务并发运行，并统一返回结果。\n\n"
+        "适合使用 delegate_task 的场景：\n"
+        "- 推理负担较重的子任务，例如调试、代码审查、研究归纳\n"
+        "- 中间过程会严重挤占主上下文的任务\n"
+        "- 可并行推进的独立工作流，例如同时研究 A 和 B\n\n"
+        "不适合使用的场景（应改用其他工具）：\n"
+        "- 纯机械多步操作、几乎不需要推理 -> 用 execute_code\n"
+        "- 只需一次工具调用 -> 直接调用对应工具\n"
+        "- 需要与用户交互的任务 -> 子代理不能使用 clarify\n\n"
+        "重要说明：\n"
+        "- 子代理完全不知道你的对话历史；所有相关信息（文件路径、报错、约束）"
+        "都必须通过 `context` 字段显式传入。\n"
+        "- 子代理不能调用：delegate_task、clarify、memory、send_message、"
+        "execute_code。\n"
+        "- 每个子代理都有独立终端会话（工作目录和运行状态彼此隔离）。\n"
+        "- 返回结果始终是数组形式，每个子任务对应一项。"
     ),
     "parameters": {
         "type": "object",
@@ -1091,29 +983,26 @@ DELEGATE_TASK_SCHEMA = {
             "goal": {
                 "type": "string",
                 "description": (
-                    "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
+                    "描述子代理要完成什么。请尽量具体且自包含，"
+                    "因为子代理并不知道你的历史对话内容。"
                 ),
             },
             "context": {
                 "type": "string",
                 "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs."
+                    "子代理需要的背景信息，例如文件路径、报错、项目结构、"
+                    "限制条件等。给得越具体，子代理完成得通常越好。"
                 ),
             },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
+                    "为该子代理启用哪些 toolset。"
+                    "默认会继承你当前已启用的 toolset。"
+                    "常见组合包括：['terminal', 'file'] 用于代码工作，"
+                    "['web'] 用于调研，['terminal', 'file', 'web'] 用于"
+                    "全栈类任务。"
                 ),
             },
             "tasks": {
@@ -1121,56 +1010,59 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "goal": {"type": "string", "description": "Task goal"},
-                        "context": {"type": "string", "description": "Task-specific context"},
+                        "goal": {"type": "string", "description": "该子任务要完成的目标"},
+                        "context": {"type": "string", "description": "该子任务专属的上下文说明"},
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                            "description": "该子任务专属的 toolset。需要联网时可用 'web'，需要 shell 时可用 'terminal'。",
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                            "description": "该子任务专用的 ACP 命令覆盖值（例如 'claude'）。只覆盖当前任务，不影响顶层 acp_command。",
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "该子任务专用的 ACP 参数覆盖值。",
                         },
                     },
                     "required": ["goal"],
                 },
-                # No maxItems — the runtime limit is configurable via
-                # delegation.max_concurrent_children (default 3) and
-                # enforced with a clear error in delegate_task().
+                # 这里不在 schema 里写死 maxItems；真正的运行时上限由
+                # delegation.max_concurrent_children（默认 3）控制，
+                # 并在 delegate_task() 中给出明确报错。
                 "description": (
-                    "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 3). Each gets "
-                    "its own subagent with isolated context and terminal session. "
-                    "When provided, top-level goal/context/toolsets are ignored."
+                    "批量模式：并行运行的一组任务（数量上限由 "
+                    "delegation.max_concurrent_children 控制，默认 3）。"
+                    "每个任务都会拿到独立子代理、隔离上下文和独立终端会话。"
+                    "一旦提供该字段，顶层的 goal/context/toolsets 会被忽略。"
                 ),
             },
             "max_iterations": {
                 "type": "integer",
                 "description": (
-                    "Max tool-calling turns per subagent (default: 50). "
-                    "Only set lower for simple tasks."
+                    "每个子代理最多允许的工具调用轮数（默认 50）。"
+                    "通常只有在任务非常简单时，才需要手动调低。"
                 ),
             },
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                    "为子代理覆盖 ACP 命令（例如 'claude'、'copilot'）。"
+                    "设置后，子代理会改用 ACP 子进程传输，而不是继承父代理当前"
+                    "使用的传输方式。这使得任意父代理（包括 Discord / Telegram / CLI）"
+                    "都可以派生出 Claude Code（如 `claude --acp --stdio`）"
+                    "或其他支持 ACP 的子代理。"
                 ),
             },
             "acp_args": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
+                    "ACP 命令参数（默认是 ['--acp', '--stdio']）。"
+                    "只有在设置了 acp_command 时才会生效。"
+                    "例如：['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
         },
@@ -1179,7 +1071,7 @@ DELEGATE_TASK_SCHEMA = {
 }
 
 
-# --- Registry ---
+# --- 注册到工具注册表 ---
 from tools.registry import registry, tool_error
 
 registry.register(

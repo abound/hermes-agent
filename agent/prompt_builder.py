@@ -436,7 +436,7 @@ def _skills_prompt_snapshot_path() -> Path:
 
 
 def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
-    """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
+    """清空技能系统提示词缓存（可选同时删除磁盘快照）。"""
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
     if clear_snapshot:
@@ -584,19 +584,17 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
 ) -> str:
-    """Build a compact skill index for the system prompt.
+    """构建用于系统提示词的紧凑技能索引。
 
-    Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
-      2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
-         mtime/size manifest — survives process restarts
+    采用两层缓存：
+    1. 进程内 LRU 缓存（按技能目录与可用工具集合做键）
+    2. 磁盘快照 ``.skills_prompt_snapshot.json``（用 mtime/size 清单校验）
 
-    Falls back to a full filesystem scan when both layers miss.
+    两层都未命中时，回退到完整文件系统扫描。
 
-    External skill directories (``skills.external_dirs`` in config.yaml) are
-    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
-    are read-only — they appear in the index but new skills are always created
-    in the local dir.  Local skills take precedence when names collide.
+    同时扫描本地技能目录与 ``skills.external_dirs`` 外部目录：
+    外部目录仅用于只读发现；创建新技能仍写入本地目录。
+    若本地与外部技能同名，本地版本优先。
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -604,9 +602,8 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
-    # ── Layer 1: in-process LRU cache ─────────────────────────────────
-    # Include the resolved platform so per-platform disabled-skill lists
-    # produce distinct cache entries (gateway serves multiple platforms).
+    # ── 第 1 层：进程内 LRU 缓存 ─────────────────────────────────
+    # 将平台信息纳入缓存键，避免不同平台的禁用技能列表相互污染。
     from gateway.session_context import get_session_env
     _platform_hint = (
         os.environ.get("HERMES_PLATFORM")
@@ -628,14 +625,14 @@ def build_skills_system_prompt(
 
     disabled = get_disabled_skill_names()
 
-    # ── Layer 2: disk snapshot ────────────────────────────────────────
+    # ── 第 2 层：磁盘快照 ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
-        # Fast path: use pre-parsed metadata from disk
+        # 快路径：直接使用磁盘快照中的预解析元数据
         for entry in snapshot.get("skills", []):
             if not isinstance(entry, dict):
                 continue
@@ -661,7 +658,7 @@ def build_skills_system_prompt(
             for k, v in (snapshot.get("category_descriptions") or {}).items()
         }
     else:
-        # Cold path: full filesystem scan + write snapshot for next time
+        # 冷路径：全量扫描文件系统并回写快照供下次复用
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
@@ -682,7 +679,7 @@ def build_skills_system_prompt(
                 (entry["frontmatter_name"], entry["description"])
             )
 
-        # Read category-level DESCRIPTION.md files
+        # 读取分类级 DESCRIPTION.md 描述文件
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
             try:
                 content = desc_file.read_text(encoding="utf-8")
@@ -703,10 +700,9 @@ def build_skills_system_prompt(
             category_descriptions,
         )
 
-    # ── External skill directories ─────────────────────────────────────
-    # Scan external dirs directly (no snapshot caching — they're read-only
-    # and typically small).  Local skills already in skills_by_category take
-    # precedence: we track seen names and skip duplicates from external dirs.
+    # ── 外部技能目录 ─────────────────────────────────────
+    # 外部目录直接扫描（通常体量小且只读，不做快照缓存）。
+    # 本地技能优先：若同名，跳过外部重复项。
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
@@ -740,7 +736,7 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
-        # External category descriptions
+        # 外部目录的分类描述
         for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
             try:
                 content = desc_file.read_text(encoding="utf-8")
@@ -764,7 +760,7 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
+            # 分类内去重并按名称排序
             seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
