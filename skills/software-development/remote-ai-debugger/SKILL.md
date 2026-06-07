@@ -1,7 +1,7 @@
 ---
 name: remote-ai-debugger
 description: Remote SSH debugging agent — classify internal logic vs external deps, reproduce with pure execute_code then dual clarify gates, MCP/RPC probes, root-cause report. NO fixes before root cause.
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -33,16 +33,28 @@ These rules are **mandatory**. Violating them breaks the workflow.
 | Rule | Meaning |
 |------|---------|
 | **No entry clarify** | Phase A parses the user message only — do **not** call `clarify` at session start |
-| **Clarify ① after pure repro** | After every **pure** `execute_code` run (no `hermes_tools`), you **must** call `clarify` before MCP, RPC scripts, or Phase E |
-| **Clarify ② before RPC/MCP** | Before any `mcp_*` tool **or** `execute_code` that imports `hermes_tools`, you **must** call `clarify` and get approval |
+| **Clarify ① after pure repro** | After every **pure** `execute_code` run (no `hermes_tools`), you **must** call `clarify` before Phase E or further investigation |
+| **Clarify ② before external writes** | Before **mutating** DB/API/MCP/terminal/file ops — **NOT** before read-only probes |
 | **Phase B read-only** | No `write_file`, `patch`, or restarts in Phase B unless required to **read** logs |
-| **Pure before RPC** | For mixed paths: run pure `execute_code` + Clarify ① **before** Clarify ② and external probes |
+| **Pure before external** | For mixed paths: run pure `execute_code` + Clarify ① **before** external probes (read or write) |
+
+**Clarify ② decision table:**
+
+| Operation | Clarify ②? |
+|-----------|------------|
+| `mcp_*` / `psql` / `curl` with `SELECT` or `GET` | **No** — proceed after Clarify ① |
+| `mcp_*` / `psql` / `curl` with `INSERT`/`UPDATE`/`DELETE` or `POST`/`PUT`/`PATCH` | **Yes** |
+| `read_file` / `search_files` / `terminal` cat/tail/journalctl | **No** |
+| `execute_code` + `hermes_tools` with `read_file` only | **No** |
+| `execute_code` + `hermes_tools` with `write_file`/`patch`/mutating `terminal` | **Yes** |
+| Phase E fix via `patch` / `write_file` | **Yes** (after user asks for fix) |
+| `terminal` restart/rm/deploy or Redis `SET`/`DEL` | **Yes** |
 
 **Self-check before each tool call:**
 
 - Have I run pure `execute_code` yet? → If no, do not Clarify ①
-- Did Clarify ① return `user_response`? → If no, do not call `mcp_*` or import `hermes_tools`
-- Does the next step touch external systems or RPC? → If yes and Clarify ② not approved, call `clarify` first
+- Did Clarify ① return `user_response`? → If no, do not write Phase E or skip to external investigation
+- Is the **next** step a **write/mutate** on an external system or production file? → If yes and Clarify ② not done, call `clarify` first; **read-only** steps need no Clarify ②
 
 ## When to Use
 
@@ -125,8 +137,8 @@ For each suspect code path, classify every significant step:
 | Class | Signals | Action |
 |-------|---------|--------|
 | **Pure internal** | Local computation, parsing, branching — no network, DB, subprocess, external SDK | Pure `execute_code` → **Clarify ①** → Phase D/E |
-| **External dependency** | HTTP/RPC, SQL, Redis, MQ, cloud API, external CLI | Pure repro if internal segment exists → **Clarify ①** → **Clarify ②** → MCP or RPC `execute_code` |
-| **Mixed** | Internal logic after external IO | Pure Python repro + Clarify ① → Clarify ② → MCP/RPC → isolate internal logic |
+| **External dependency** | HTTP/RPC, SQL, Redis, MQ, cloud API, external CLI | Pure repro if internal segment exists → **Clarify ①** → read-only MCP/terminal **or** Clarify ② then writes |
+| **Mixed** | Internal logic after external IO | Pure Python repro + Clarify ① → read-only external probe → Clarify ② only if mutating |
 
 ---
 
@@ -189,41 +201,47 @@ After Clarify ①, output this block in your assistant message (for Phase D/E):
 - actual: ...
 - repro_output: ...    # execute_code stdout summary
 - scope: ...
-- rpc_plan: (none yet) # filled after Clarify ② if needed
+- rpc_plan: (none yet) # filled when a write/mutate external step is planned
 ```
 
-**Gate:** Do not call `mcp_*`, do not use `hermes_tools` in `execute_code`, and do not write Phase E until Clarify ① has a `user_response`.
+**Gate:** Do not write Phase E until Clarify ① has a `user_response`. Read-only external probes (`SELECT`, `GET`, `read_file`) may proceed immediately after Clarify ① without Clarify ②.
 
 ---
 
-## Phase C3 — Clarify ② + RPC/MCP (conditional, mandatory when triggered)
+## Phase C3 — Clarify ② — External Writes Only (conditional)
 
-**Trigger when any of these is next:**
+**Trigger only when the next step is a write or state change** — not for read-only investigation.
 
-| Trigger | Examples |
-|---------|----------|
-| **MCP tools** | `mcp_postgres_*`, `mcp_fetch_*`, any tool prefixed `mcp_` |
-| **RPC execute_code** | Script contains `from hermes_tools import terminal, read_file, ...` |
-| **Mixed external probe** | Read DB/API state before comparing to code assumptions |
+| Needs Clarify ② | Does NOT need Clarify ② |
+|-------------------|-------------------------|
+| DB `INSERT` / `UPDATE` / `DELETE` / DDL | DB `SELECT` |
+| HTTP `POST` / `PUT` / `PATCH` / `DELETE` | HTTP `GET` / `HEAD` |
+| Redis `SET` / `DEL`, MQ publish | Redis `GET`, read-only scan |
+| `write_file` / `patch` (fix phase) | `read_file` / `search_files` |
+| `terminal` restart, `rm`, deploy, mutating scripts | `terminal` cat/tail/`psql SELECT`/`curl GET` |
+| MCP tools that mutate data | MCP read-only probes |
+| `execute_code` importing mutating `hermes_tools` | `execute_code` with `hermes_tools.read_file` only |
 
-**Before executing**, draft `rpc_plan` (one short paragraph: tool names, tables/URLs, read-only vs write).
+**Read-only external probes (after Clarify ①):** run directly — e.g. `mcp_postgres_*` with SELECT, `terminal` + `psql -c 'SELECT ...'`, `curl -sS GET URL`. Document results in Phase D; no `rpc_plan` approval step required.
 
-**Template:**
+**Before a mutating step**, draft `rpc_plan` (tool/command, target table/URL, what will change).
+
+**Template (writes only):**
 
 ```
 clarify(
-  question="About to execute external probe:\n{rpc_plan}\n\nRead-only probe. Approve?",
-  choices=["Approve", "Use terminal read-only instead", "Cancel external probe"]
+  question="About to execute mutating external operation:\n{rpc_plan}\n\nThis will CHANGE data or system state. Approve?",
+  choices=["Approve", "Cancel — stay read-only", "Suggest alternative"]
 )
 ```
 
 | User choice | Action |
-|-------------|------|
-| Approve | Run MCP or RPC `execute_code` as planned; update debug contract `rpc_plan` |
-| Use terminal read-only instead | `curl`, `psql -c 'SELECT...'`, `redis-cli GET` via `terminal` — no MCP |
-| Cancel external probe | Stay on pure repro + Phase D with terminal/file only; document gap |
+|-------------|--------|
+| Approve | Run mutating MCP/terminal/RPC/patch; update debug contract `rpc_plan` |
+| Cancel — stay read-only | Continue investigation with SELECT/GET/read_file only |
+| Suggest alternative | Revise plan; re-clarify if still mutating |
 
-**Gate:** No `mcp_*` and no `import hermes_tools` until Clarify ② returns approval (or terminal fallback chosen).
+**Gate:** No **mutating** `mcp_*`, mutating `terminal`, `write_file`, `patch`, or mutating `hermes_tools` until Clarify ② returns approval.
 
 ### MCP mapping table (customize per deployment)
 
@@ -236,22 +254,26 @@ clarify(
 | GitHub / issues | `github` | issue/PR search | `terminal`: `gh api ...` |
 | Files outside repo | `filesystem` | read/list | `read_file` / `terminal` |
 
-If no MCP server matches, state that explicitly after Clarify ② "terminal fallback" and use read-only terminal probes.
+If no MCP server matches, use read-only `terminal` probes (`psql SELECT`, `curl GET`) without Clarify ②; document the MCP gap.
 
-### RPC execute_code (after Clarify ② approval only)
+### RPC execute_code (read vs write)
 
-Use when you need multi-step tool calls inside one script on SSH remote:
+**Read-only RPC scripts** — no Clarify ② (after Clarify ①):
 
 ```python
-from hermes_tools import read_file, terminal
+from hermes_tools import read_file
 
-# Example: read config then repro with real path
 content = read_file("/opt/app/config.yaml")
-# ... logic using content ...
-print("result:", ...)
+print("config snippet:", content[:200])
 ```
 
-MCP is **not** available inside `hermes_tools` sandbox — call `mcp_*` tools directly from the agent, not from inside `execute_code`.
+**Mutating RPC scripts** — Clarify ② required first:
+
+```python
+from hermes_tools import write_file, terminal  # mutating — needs approval
+```
+
+MCP is **not** available inside `hermes_tools` sandbox — call `mcp_*` tools directly from the agent. Read-only MCP needs no Clarify ②; mutating MCP needs Clarify ②.
 
 ---
 
@@ -340,9 +362,9 @@ After the report, ask whether the user wants a fix implemented.
 | 1–2 | Phase A + B | Parse + logs/source via terminal/read_file |
 | 3 | `execute_code` | Pure state-machine logic, mock DB return `pending` |
 | 4 | `clarify` ① | Confirm repro matches user's actual |
-| 5 | `clarify` ② | Plan: read-only `SELECT ... FROM orders WHERE id=...` via MCP or psql |
-| 6 | `mcp_*` or `terminal` | After approval only |
-| 7 | Phase D/E | Compare DB truth vs code branch |
+| 5 | `mcp_*` or `terminal` | **No Clarify ②** — read-only `SELECT ... FROM orders WHERE id=...` |
+| 6 | Phase D/E | Compare DB truth vs code branch |
+| 7 | `clarify` ② | **Only if** proposing `UPDATE`/`INSERT` to test hypothesis or apply fix |
 
 ---
 
@@ -353,9 +375,9 @@ After the report, ask whether the user wants a fix implemented.
 | 1 | `terminal` | Remote shell, logs, curl/psql fallback |
 | 2 | `read_file` / `search_files` | Source and config on remote |
 | 3 | `execute_code` (pure) | Minimal repro — **Clarify ① after every run** |
-| 4 | `clarify` | ① after pure repro; ② before MCP/RPC |
-| 5 | `mcp_*` | External systems — **only after Clarify ②** |
-| 6 | `execute_code` (RPC) | Scripts with `hermes_tools` — **only after Clarify ②** |
+| 4 | `clarify` | ① after pure repro; ② before **writes/mutations** only |
+| 5 | `mcp_*` | Read-only probes after Clarify ①; mutating calls after Clarify ② |
+| 6 | `execute_code` (RPC) | Read-only `hermes_tools` after Clarify ①; mutating after Clarify ② |
 | 7 | `delegate_task` | Large isolated sub-investigations only |
 
 **Avoid:** `browser_*` unless debugging a web UI on remote. **Avoid:** `write_file`/`patch` until user approves fix.
@@ -366,7 +388,7 @@ After the report, ask whether the user wants a fix implemented.
 
 The user's PC may be Windows where local `execute_code` is disabled. With `remote-debugger` profile, **`execute_code` and `terminal` run on the SSH Linux host** — always confirm `terminal` backend is `ssh` before relying on Python repro.
 
-Pure repro on SSH should show `tool_calls_made: 0`. RPC scripts show `tool_calls_made > 0` and require Clarify ② first.
+Pure repro on SSH should show `tool_calls_made: 0`. RPC scripts with read-only `hermes_tools` may run after Clarify ① without Clarify ②; mutating RPC requires Clarify ② first.
 
 ---
 

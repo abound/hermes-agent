@@ -1,0 +1,49 @@
+# MCP servers for remote-debugger profile
+# Merge into ~/.hermes/profiles/remote-debugger/config.yaml under mcp_servers:
+#
+#   mcp_servers:
+#     postgres: { ... }
+#
+# After editing, restart Hermes. Tools appear as mcp_<server>_<toolname>.
+# Enable server names in platform_toolsets.cli if needed (hermes tools CLI).
+
+mcp_servers:
+  # --- PostgreSQL (example — requires mcp server package) ---
+  # postgres:
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-postgres", "postgresql://user:pass@localhost:5432/mydb"]
+  #   timeout: 120
+
+  # --- HTTP fetch (example) ---
+  # fetch:
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-fetch"]
+  #   timeout: 60
+
+  # --- GitHub (example) ---
+  # github:
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-github"]
+  #   env:
+  #     GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+  #   timeout: 120
+
+  # --- Filesystem on remote host (usually unnecessary — use read_file via SSH) ---
+  # filesystem:
+  #   command: "npx"
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/opt/app"]
+  #   timeout: 60
+
+  # --- Custom internal API (wrap your service as MCP HTTP server) ---
+  # my_api:
+  #   url: "http://127.0.0.1:8080/mcp"
+  #   headers:
+  #     Authorization: "Bearer YOUR_TOKEN"
+  #   timeout: 180
+
+# Mapping reference (for skill Phase C):
+#   postgres  -> SQL read probes
+#   fetch     -> HTTP GET
+#   github    -> issues/PRs/code search
+#   redis     -> key inspection
+#   my_api    -> project-specific read tools

@@ -20,7 +20,9 @@ data/
 tmp/
 temp_vision_images/
 hermes-*/*
-examples/
+examples/*
+!examples/remote-debugger/
+!examples/remote-debugger/**
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh

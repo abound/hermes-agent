@@ -1,0 +1,55 @@
+# Profile: remote-debugger
+# Copy to: ~/.hermes/profiles/remote-debugger/config.yaml
+#
+# Start: hermes -p remote-debugger
+
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+
+custom_providers:
+  - name: deepseek-v4
+    base_url: https://api.deepseek.com/v1
+    api_mode: chat_completions
+    models:
+      deepseek-v4-pro:
+        context_length: 1000000
+        name: DeepSeek V4 Pro
+
+terminal:
+  backend: ssh
+  cwd: /tmp              # remote cwd; use /opt/app for production projects
+  persistent_shell: true
+  timeout: 300
+
+# CLI toolsets for remote debugging (explicit list)
+platform_toolsets:
+  cli:
+    - debugging          # terminal + web + file
+    - code_execution     # execute_code on SSH remote
+    - memory
+    - session_search
+    - skills
+    - clarify
+    - delegation
+
+compression:
+  enabled: true
+  threshold: 0.50
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  flush_min_turns: 6
+
+# Merge with mcp_servers.example.yaml or paste servers below
+mcp_servers: {}
+
+code_execution:
+  timeout: 120
+  max_tool_calls: 50
+
+delegation:
+  max_iterations: 30
