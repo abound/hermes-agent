@@ -48,6 +48,8 @@ def test_examples_remote_debugger_deliverables():
         "install-profile.ps1",
         "install-profile.sh",
         "fixtures/repro_bug.py",
+        "archive/remote_ai_debugger_e56f4642.plan.md",
+        "archive/README.md",
     ]
     for name in required:
         assert (EXAMPLE_DIR / name).is_file(), f"missing {name}"

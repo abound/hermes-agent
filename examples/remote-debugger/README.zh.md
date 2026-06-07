@@ -2,12 +2,23 @@
 
 基于 Hermes Agent 的远程 SSH 调试 Profile + Skill，用于对照**预期 vs 实际**定位根因。
 
+## 仓库根目录
+
+本项目的 Hermes 源码与 Remote Debugger 全部在此路径下：
+
+```
+D:\BaiduDownLoad\多屏协同\hermes-agent
+```
+
+Cursor 原计划 `remote_ai_debugger_e56f4642` 已归档至 [`archive/remote_ai_debugger_e56f4642.plan.md`](archive/remote_ai_debugger_e56f4642.plan.md)；**现行设计以 [`PLAN.zh.md`](PLAN.zh.md) + [`SKILL.md`](../../skills/software-development/remote-ai-debugger/SKILL.md) v1.2.0 为准**。
+
 ## 组件
 
 | 组件 | 路径 |
 |------|------|
 | Skill（权威） | [`skills/software-development/remote-ai-debugger/SKILL.md`](../../skills/software-development/remote-ai-debugger/SKILL.md) |
 | 设计说明 | [`PLAN.zh.md`](PLAN.zh.md) |
+| Cursor 计划归档 | [`archive/remote_ai_debugger_e56f4642.plan.md`](archive/remote_ai_debugger_e56f4642.plan.md) |
 | 需求对齐 | [`REQUIREMENTS.zh.md`](REQUIREMENTS.zh.md) |
 | Profile 示例 | [`config.yaml.example`](config.yaml.example) |
 | MCP 示例 | [`mcp_servers.example.yaml`](mcp_servers.example.yaml) |
@@ -20,9 +31,10 @@
 
 ### 1. 创建 Profile
 
-**推荐：一键安装（在仓库根目录执行）**
+**推荐：一键安装（在仓库根目录 `D:\BaiduDownLoad\多屏协同\hermes-agent` 执行）**
 
 ```powershell
+cd D:\BaiduDownLoad\多屏协同\hermes-agent
 .\examples\remote-debugger\install-profile.ps1
 ```
 

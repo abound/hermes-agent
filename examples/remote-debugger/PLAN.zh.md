@@ -1,6 +1,9 @@
 # Remote AI Debugger — 设计与实现说明
 
-本文档由 Cursor 计划整理入仓，与 [`SKILL.md`](../../skills/software-development/remote-ai-debugger/SKILL.md) v1.2.0 及 [`REQUIREMENTS.zh.md`](REQUIREMENTS.zh.md) 对齐。
+本文档由 Cursor 计划 `remote_ai_debugger_e56f4642` 整理入仓，与 [`SKILL.md`](../../skills/software-development/remote-ai-debugger/SKILL.md) v1.2.0 及 [`REQUIREMENTS.zh.md`](REQUIREMENTS.zh.md) 对齐。
+
+**Hermes 仓库根目录：** `D:\BaiduDownLoad\多屏协同\hermes-agent`  
+**原计划归档：** [`archive/remote_ai_debugger_e56f4642.plan.md`](archive/remote_ai_debugger_e56f4642.plan.md)
 
 ## 目标
 

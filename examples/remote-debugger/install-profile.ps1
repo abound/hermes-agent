@@ -18,4 +18,5 @@ Copy-Item (Join-Path $ExampleDir "PLAN.zh.md") (Join-Path $ProfileDir "PLAN.zh.m
 Copy-Item (Join-Path $ExampleDir "REQUIREMENTS.zh.md") (Join-Path $ProfileDir "REQUIREMENTS.zh.md") -Force
 
 Write-Host "Installed profile to $ProfileDir"
+Write-Host "Repo root: $RepoRoot"
 Write-Host "Next: edit .env (TERMINAL_SSH_*), then: hermes -p remote-debugger doctor"
