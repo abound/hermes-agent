@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """
-Memory Tool Module - Persistent Curated Memory
+Memory 工具模块 — 有界、可持久化的精选记忆
 
-Provides bounded, file-backed memory that persists across sessions. Two stores:
-  - MEMORY.md: agent's personal notes and observations (environment facts, project
-    conventions, tool quirks, things learned)
-  - USER.md: what the agent knows about the user (preferences, communication style,
-    expectations, workflow habits)
+跨会话持久化，文件落盘。两个存储：
+  - MEMORY.md：agent 个人笔记（环境事实、项目约定、工具坑、学到的经验）
+  - USER.md：关于用户的信息（偏好、沟通风格、期望、工作习惯）
 
-Both are injected into the system prompt as a frozen snapshot at session start.
-Mid-session writes update files on disk immediately (durable) but do NOT change
-the system prompt -- this preserves the prefix cache for the entire session.
-The snapshot refreshes on the next session start.
+二者在会话启动时以冻结快照注入 system prompt。
+会话中途写入会立即落盘，但**不会**改变当前会话的 system prompt —— 为保持 prefix cache。
+下次会话启动（或 _invalidate_system_prompt + load_from_disk）时快照刷新。
 
-Entry delimiter: § (section sign). Entries can be multiline.
-Character limits (not tokens) because char counts are model-independent.
+条目分隔符：§（section sign），条目可多行。
+上限按字符计（非 token），与具体模型无关。
 
-Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
-- replace/remove use short unique substring matching (not full text or IDs)
-- Behavioral guidance lives in the tool schema description
-- Frozen snapshot pattern: system prompt is stable, tool responses show live state
+设计要点：
+- 单一 `memory` 工具，action：add / replace / remove
+- replace/remove 用短唯一子串匹配（非全文、非 ID）
+- 行为指引写在 tool schema description（英文，给模型看）
+- 冻结快照：system prompt 稳定；工具返回反映 live 状态
 """
 
 import fcntl
@@ -36,25 +33,20 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live — resolved dynamically so profile overrides
-# (HERMES_HOME env var changes) are always respected.  The old module-level
-# constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
+# 记忆文件目录 — 动态解析，尊重 HERMES_HOME / profile 切换
+# 旧版模块级常量在 import 时缓存，profile 切换后可能过期
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
+    """返回当前 profile 下的 memories 目录。"""
     return get_hermes_home() / "memories"
 
-# Backward-compatible alias — gateway/run.py imports this at runtime inside
-# a function body, so it gets the correct snapshot for that process.  New code
-# should prefer get_memory_dir().
+# 向后兼容别名 — gateway/run.py 在函数体内运行时 import，能拿到正确路径
 MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
 
 
 # ---------------------------------------------------------------------------
-# Memory content scanning — lightweight check for injection/exfiltration
-# in content that gets injected into the system prompt.
+# 记忆内容扫描 — 写入 system prompt 前的轻量注入/窃密检测
 # ---------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
@@ -75,7 +67,7 @@ _MEMORY_THREAT_PATTERNS = [
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
 ]
 
-# Subset of invisible chars for injection detection
+# 用于注入检测的不可见字符子集
 _INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -83,13 +75,11 @@ _INVISIBLE_CHARS = {
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
+    """扫描记忆内容中的注入/窃密模式。命中则返回错误字符串。"""
     for char in _INVISIBLE_CHARS:
         if char in content:
             return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
 
-    # Check threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
@@ -99,13 +89,13 @@ def _scan_memory_content(content: str) -> Optional[str]:
 
 class MemoryStore:
     """
-    Bounded curated memory with file persistence. One instance per AIAgent.
+    有界精选记忆 + 文件持久化。每个 AIAgent 一个实例。
 
-    Maintains two parallel states:
-      - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
-        Never mutated mid-session. Keeps prefix cache stable.
-      - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
-        Tool responses always reflect this live state.
+    维护两套并行状态：
+      - _system_prompt_snapshot：load_from_disk 时冻结，用于 system prompt 注入；
+        会话中途不更新，保持 prefix cache 稳定。
+      - memory_entries / user_entries：live 状态，工具调用会改并落盘；
+        工具返回始终反映 live 状态。
     """
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
@@ -113,22 +103,22 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
+        # system prompt 用的冻结快照 — 仅在 load_from_disk() 时更新
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """从 MEMORY.md / USER.md 加载条目，并捕获 system prompt 快照。"""
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
+        # 去重（保序，保留首次出现）
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
-        # Capture frozen snapshot for system prompt injection
+        # 冻结快照供 system prompt 注入
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
@@ -137,10 +127,9 @@ class MemoryStore:
     @staticmethod
     @contextmanager
     def _file_lock(path: Path):
-        """Acquire an exclusive file lock for read-modify-write safety.
+        """独占文件锁，保证读-改-写安全。
 
-        Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
+        使用独立 .lock 文件，记忆本体仍可用 os.replace() 原子替换。
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,16 +149,16 @@ class MemoryStore:
         return mem_dir / "MEMORY.md"
 
     def _reload_target(self, target: str):
-        """Re-read entries from disk into in-memory state.
+        """在持锁前提下从磁盘重读条目到内存。
 
-        Called under file lock to get the latest state before mutating.
+        变更前先拉最新状态，避免多会话/多进程写冲突。
         """
         fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+        fresh = list(dict.fromkeys(fresh))  # 去重
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
+        """每次变更后持久化到对应文件。"""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
@@ -196,39 +185,40 @@ class MemoryStore:
         return self.memory_char_limit
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """追加新条目。超字符上限则返回错误。"""
         content = content.strip()
         if not content:
-            return {"success": False, "error": "Content cannot be empty."}
+            return {"success": False, "error": "内容不能为空。"}
 
-        # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
+            # 持锁后重读，合并其它会话的写入
             self._reload_target(target)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
+            # 【何时】内容与已有条目完全相同
+            # 【为何】避免重复占用配额
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(target, "条目已存在（未重复添加）。")
 
-            # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
+            # 【何时】追加后总字符数超 limit
+            # 【为何】硬上限，引导模型 replace/remove 后再 add
             if new_total > limit:
                 current = self._char_count(target)
                 return {
                     "success": False,
                     "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                        f"记忆已用 {current:,}/{limit:,} 字符。"
+                        f"添加本条（{len(content)} 字符）将超出上限。"
+                        f"请先 replace 或 remove 现有条目。"
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -238,18 +228,17 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, "已添加条目。")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """用子串 old_text 定位条目，整段替换为 new_content。"""
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
-            return {"success": False, "error": "old_text cannot be empty."}
+            return {"success": False, "error": "old_text 不能为空。"}
         if not new_content:
-            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+            return {"success": False, "error": "new_content 不能为空。删除请用 remove。"}
 
-        # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
@@ -261,24 +250,23 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                return {"success": False, "error": f"没有条目匹配「{old_text}」。"}
 
+            # 【何时】多条目都含 old_text 子串
             if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
                         "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                        "error": f"多条条目匹配「{old_text}」，请提供更具体的子串。",
                         "matches": previews,
                     }
-                # All identical -- safe to replace just the first
+                # 多条但内容完全相同 — 只改第一条即可
 
             idx = matches[0][0]
             limit = self._char_limit(target)
 
-            # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
             test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
@@ -287,8 +275,8 @@ class MemoryStore:
                 return {
                     "success": False,
                     "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
+                        f"替换后将达 {new_total:,}/{limit:,} 字符，超出上限。"
+                        f"请缩短新内容或先删除其它条目。"
                     ),
                 }
 
@@ -296,13 +284,13 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        return self._success_response(target, "已替换条目。")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
+        """删除包含 old_text 子串的那一条目。"""
         old_text = old_text.strip()
         if not old_text:
-            return {"success": False, "error": "old_text cannot be empty."}
+            return {"success": False, "error": "old_text 不能为空。"}
 
         with self._file_lock(self._path_for(target)):
             self._reload_target(target)
@@ -311,41 +299,39 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                return {"success": False, "error": f"没有条目匹配「{old_text}」。"}
 
             if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
                         "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                        "error": f"多条条目匹配「{old_text}」，请提供更具体的子串。",
                         "matches": previews,
                     }
-                # All identical -- safe to remove just the first
+                # 多条完全相同 — 只删第一条
 
             idx = matches[0][0]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        return self._success_response(target, "已删除条目。")
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
-        Return the frozen snapshot for system prompt injection.
+        返回供 system prompt 注入的冻结快照。
 
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
+        是 load_from_disk() 时的状态，非 live 状态。
+        会话中途写入不影响此返回值，以保持 prefix cache。
 
-        Returns None if the snapshot is empty (no entries at load time).
+        加载时无条目则返回 None。
         """
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
-    # -- Internal helpers --
+    # -- 内部辅助 --
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
@@ -357,7 +343,7 @@ class MemoryStore:
             "success": True,
             "target": target,
             "entries": entries,
-            "usage": f"{pct}% — {current:,}/{limit:,} chars",
+            "usage": f"{pct}% — {current:,}/{limit:,} 字符",
             "entry_count": len(entries),
         }
         if message:
@@ -365,7 +351,7 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """渲染带标题与占用率指示的 system prompt 块（注入给模型）。"""
         if not entries:
             return ""
 
@@ -375,19 +361,18 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = f"用户画像 [{pct}% — {current:,}/{limit:,} 字符]"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = f"记忆笔记 [{pct}% — {current:,}/{limit:,} 字符]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries.
+        """读取记忆文件并按条目拆分。
 
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
+        读操作无需加锁：_write_file 用原子 rename，读者总能看到完整旧文件或完整新文件。
         """
         if not path.exists():
             return []
@@ -399,23 +384,19 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
+        # 必须用 ENTRY_DELIMITER 拆分；单按 "§" 拆会把条目内容里的 § 误切开
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
+        """临时文件写入 + 原子 rename 落盘。
 
-        Previous implementation used open("w") + flock, but "w" truncates the
-        file *before* the lock is acquired, creating a race window where
-        concurrent readers see an empty file. Atomic rename avoids this:
-        readers always see either the old complete file or the new one.
+        旧实现 open("w")+flock 会在拿到锁之前 truncate，并发读者可能看到空文件。
+        原子 rename 保证读者只看到完整的旧版或新版。
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".mem_"
             )
@@ -424,9 +405,8 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                os.replace(tmp_path, str(path))  # 同文件系统上原子
             except BaseException:
-                # Clean up temp file on any failure
                 try:
                     os.unlink(tmp_path)
                 except OSError:
@@ -444,72 +424,71 @@ def memory_tool(
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
-    Single entry point for the memory tool. Dispatches to MemoryStore methods.
+    memory 工具统一入口，分发到 MemoryStore 的 add/replace/remove。
 
-    Returns JSON string with results.
+    Returns:
+        JSON 字符串（success、entries、usage 等）
     """
     if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+        return tool_error("记忆不可用。可能已在配置中关闭或当前环境未启用。", success=False)
 
     if target not in ("memory", "user"):
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+        return tool_error(f"无效的 target「{target}」。请使用 memory 或 user。", success=False)
 
     if action == "add":
         if not content:
-            return tool_error("Content is required for 'add' action.", success=False)
+            return tool_error("add 操作需要 content。", success=False)
         result = store.add(target, content)
 
     elif action == "replace":
         if not old_text:
-            return tool_error("old_text is required for 'replace' action.", success=False)
+            return tool_error("replace 操作需要 old_text。", success=False)
         if not content:
-            return tool_error("content is required for 'replace' action.", success=False)
+            return tool_error("replace 操作需要 content。", success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
         if not old_text:
-            return tool_error("old_text is required for 'remove' action.", success=False)
+            return tool_error("remove 操作需要 old_text。", success=False)
         result = store.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"未知的 action「{action}」。请使用：add、replace、remove。", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
+    """无外部依赖，memory 工具始终可用。"""
     return True
 
 
 # =============================================================================
-# OpenAI Function-Calling Schema
+# OpenAI Function-Calling Schema（中文 — 直接发给模型）
 # =============================================================================
 
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable information to persistent memory that survives across sessions. "
-        "Memory is injected into future turns, so keep it compact and focused on facts "
-        "that will still matter later.\n\n"
-        "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
-        "- User corrects you or says 'remember this' / 'don't do that again'\n"
-        "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
-        "- You discover something about the environment (OS, installed tools, project structure)\n"
-        "- You learn a convention, API quirk, or workflow specific to this user's setup\n"
-        "- You identify a stable fact that will be useful again in future sessions\n\n"
-        "PRIORITY: User preferences and corrections > environment facts > procedural knowledge. "
-        "The most valuable memory prevents the user from having to repeat themselves.\n\n"
-        "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-        "state to memory; use session_search to recall those from past transcripts.\n"
-        "If you've discovered a new way to do something, solved a problem that could be "
-        "necessary later, save it as a skill with the skill tool.\n\n"
-        "TWO TARGETS:\n"
-        "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
-        "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
-        "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
-        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
+        "将跨会话仍有价值的信息写入持久记忆。"
+        "记忆会注入后续对话，请保持精简，只记以后仍有用的事实。\n\n"
+        "何时保存（主动执行，不要等用户开口）：\n"
+        "- 用户纠正你，或说「记住」「别再那样做」\n"
+        "- 用户分享偏好、习惯或个人细节（姓名、角色、时区、编码风格等）\n"
+        "- 你发现环境信息（操作系统、已装工具、项目结构）\n"
+        "- 你学到该用户环境下的约定、API 怪癖或工作流\n"
+        "- 你识别出未来会话仍会用的稳定事实\n\n"
+        "优先级：用户偏好与纠正 > 环境事实 > 流程性知识。"
+        "最有价值的记忆能减少用户反复提醒。\n\n"
+        "不要保存任务进度、会话结果、完工日志或临时 TODO；"
+        "这类内容用 session_search 从历史 transcript 召回。\n"
+        "若发现可复用的做法或解法，用 skill 工具存为技能。\n\n"
+        "两个 target：\n"
+        "- user：用户是谁 — 姓名、角色、偏好、沟通风格、忌讳\n"
+        "- memory：你的笔记 — 环境事实、项目约定、工具坑、经验教训\n\n"
+        "操作：add（新增）、replace（更新 — 用 old_text 定位）、"
+        "remove（删除 — 用 old_text 定位）。\n\n"
+        "跳过：琐碎/显而易见、易重新查到的、原始数据 dump、临时任务状态。"
     ),
     "parameters": {
         "type": "object",
@@ -517,20 +496,20 @@ MEMORY_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "description": "要执行的操作：add / replace / remove。"
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "存储目标：memory=个人笔记，user=用户画像。"
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'."
+                "description": "条目正文。add 和 replace 必填。"
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": "用于 replace/remove 的短唯一子串，定位要改或删的条目。"
             },
         },
         "required": ["action", "target"],
@@ -554,7 +533,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 
