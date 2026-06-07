@@ -6,14 +6,31 @@
 
 | 组件 | 路径 |
 |------|------|
-| Skill | `skills/software-development/remote-ai-debugger/SKILL.md` |
-| Profile 示例 | `examples/remote-debugger/config.yaml.example` |
-| MCP 示例 | `examples/remote-debugger/mcp_servers.example.yaml` |
+| Skill（权威） | [`skills/software-development/remote-ai-debugger/SKILL.md`](../../skills/software-development/remote-ai-debugger/SKILL.md) |
+| 设计说明 | [`PLAN.zh.md`](PLAN.zh.md) |
+| 需求对齐 | [`REQUIREMENTS.zh.md`](REQUIREMENTS.zh.md) |
+| Profile 示例 | [`config.yaml.example`](config.yaml.example) |
+| MCP 示例 | [`mcp_servers.example.yaml`](mcp_servers.example.yaml) |
+| 环境变量模板 | [`.env.example`](.env.example) |
+| 安装脚本 | [`install-profile.ps1`](install-profile.ps1) / [`install-profile.sh`](install-profile.sh) |
+| 冒烟 fixture | [`fixtures/repro_bug.py`](fixtures/repro_bug.py) |
 | 用户 Profile | `~/.hermes/profiles/remote-debugger/` |
 
 ## 快速安装
 
 ### 1. 创建 Profile
+
+**推荐：一键安装（在仓库根目录执行）**
+
+```powershell
+.\examples\remote-debugger\install-profile.ps1
+```
+
+```bash
+bash examples/remote-debugger/install-profile.sh
+```
+
+**或手动复制：**
 
 ```powershell
 # Windows PowerShell
@@ -22,7 +39,10 @@ New-Item -ItemType Directory -Force -Path $profileDir
 
 Copy-Item examples\remote-debugger\config.yaml.example "$profileDir\config.yaml"
 Copy-Item examples\remote-debugger\mcp_servers.example.yaml "$profileDir\mcp_servers.fragment.yaml"
+Copy-Item examples\remote-debugger\.env.example "$profileDir\.env"
 ```
+
+完整设计见 [`PLAN.zh.md`](PLAN.zh.md)。
 
 编辑 `config.yaml`：
 
@@ -32,7 +52,7 @@ Copy-Item examples\remote-debugger\mcp_servers.example.yaml "$profileDir\mcp_ser
 
 ### 2. 配置 SSH（Profile `.env`）
 
-在 `~/.hermes/profiles/remote-debugger/.env` 写入：
+在 `~/.hermes/profiles/remote-debugger/.env` 写入（或从 [`.env.example`](.env.example) 复制）：
 
 ```bash
 TERMINAL_ENV=ssh

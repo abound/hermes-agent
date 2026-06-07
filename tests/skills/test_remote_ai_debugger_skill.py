@@ -2,13 +2,15 @@
 
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILL_PATH = (
-    Path(__file__).resolve().parents[2]
+    REPO_ROOT
     / "skills"
     / "software-development"
     / "remote-ai-debugger"
     / "SKILL.md"
 )
+EXAMPLE_DIR = REPO_ROOT / "examples" / "remote-debugger"
 
 
 def test_remote_ai_debugger_skill_exists():
@@ -33,3 +35,19 @@ def test_no_entry_clarify():
     text = SKILL_PATH.read_text(encoding="utf-8")
     assert "No entry clarify" in text
     assert "Do not call `clarify` in this phase" in text
+
+
+def test_examples_remote_debugger_deliverables():
+    required = [
+        "README.zh.md",
+        "PLAN.zh.md",
+        "REQUIREMENTS.zh.md",
+        "config.yaml.example",
+        "mcp_servers.example.yaml",
+        ".env.example",
+        "install-profile.ps1",
+        "install-profile.sh",
+        "fixtures/repro_bug.py",
+    ]
+    for name in required:
+        assert (EXAMPLE_DIR / name).is_file(), f"missing {name}"

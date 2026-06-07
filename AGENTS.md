@@ -455,6 +455,22 @@ def profile_env(tmp_path, monkeypatch):
 
 ---
 
+---
+
+## Remote AI Debugger（Skill + Profile）
+
+SSH 远程根因调试：`/remote-ai-debugger`，双 clarify 门禁（① 纯复现后；② 仅写/变更操作）。
+
+| 路径 | 说明 |
+|------|------|
+| `skills/software-development/remote-ai-debugger/SKILL.md` | Agent 工作流（权威） |
+| `examples/remote-debugger/` | Profile 模板、PLAN、安装脚本、冒烟 fixture |
+| `tests/skills/test_remote_ai_debugger_skill.py` | SKILL 内容冒烟测试 |
+
+安装：`examples/remote-debugger/install-profile.ps1` → `hermes -p remote-debugger doctor`
+
+---
+
 ## Testing
 
 ```bash
