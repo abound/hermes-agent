@@ -1,15 +1,11 @@
 """
-Session Insights Engine for Hermes Agent.
+Hermes Agent 会话洞察引擎。
 
-Analyzes historical session data from the SQLite state database to produce
-comprehensive usage insights — token consumption, cost estimates, tool usage
-patterns, activity trends, model/platform breakdowns, and session metrics.
+从 SQLite 状态库分析历史会话：token 消耗、费用估算、工具使用模式、
+活动趋势、模型/平台分布等。灵感来自 Claude Code 的 /insights，并适配
+Hermes 多平台架构。
 
-Inspired by Claude Code's /insights command, adapted for Hermes Agent's
-multi-platform architecture with additional cost estimation and platform
-breakdown capabilities.
-
-Usage:
+用法：
     from agent.insights import InsightsEngine
     engine = InsightsEngine(db)
     report = engine.generate(days=30)

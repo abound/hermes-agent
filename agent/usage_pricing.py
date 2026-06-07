@@ -1,3 +1,10 @@
+"""用量统计与费用估算。
+
+将各 provider 的 usage 字段归一化为 CanonicalUsage，
+再按官方定价快照 / OpenRouter / models.dev 估算 USD 成本。
+供 /usage 命令、insights 与会话统计使用。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

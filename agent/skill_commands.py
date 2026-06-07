@@ -1,8 +1,6 @@
-"""Shared slash command helpers for skills and built-in prompt-style modes.
+"""技能与内置 prompt 模式的斜杠命令共享逻辑。
 
-Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
-can invoke skills via /skill-name commands and prompt-only built-ins like
-/plan.
+CLI (cli.py) 与 gateway (gateway/run.py) 共用，支持 /skill-name 与 /plan 等。
 """
 
 import json

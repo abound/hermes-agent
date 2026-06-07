@@ -1,7 +1,6 @@
-"""CLI presentation -- spinner, kawaii faces, tool preview formatting.
+"""CLI 展示层 —— Spinner、可爱表情、工具调用预览格式。
 
-Pure display functions and classes with no AIAgent dependency.
-Used by AIAgent._execute_tool_calls for CLI feedback.
+纯展示函数/类，不依赖 AIAgent；由 AIAgent._execute_tool_calls 用于终端反馈。
 """
 
 import json

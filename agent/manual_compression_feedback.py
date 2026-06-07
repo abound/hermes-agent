@@ -1,4 +1,4 @@
-"""User-facing summaries for manual compression commands."""
+"""手动压缩命令的用户可读摘要。"""
 
 from __future__ import annotations
 

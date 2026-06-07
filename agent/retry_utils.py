@@ -1,8 +1,6 @@
-"""Retry utilities — jittered backoff for decorrelated retries.
+"""带抖动的退避重试工具。
 
-Replaces fixed exponential backoff with jittered delays to prevent
-thundering-herd retry spikes when multiple sessions hit the same
-rate-limited provider concurrently.
+用随机抖动替代固定指数退避，避免多会话同时重试同一限流 provider 造成惊群。
 """
 
 import random

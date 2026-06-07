@@ -1,11 +1,10 @@
-"""Anthropic prompt caching (system_and_3 strategy).
+"""Anthropic 提示词缓存（system_and_3 策略）。
 
-Reduces input token costs by ~75% on multi-turn conversations by caching
-the conversation prefix. Uses 4 cache_control breakpoints (Anthropic max):
-  1. System prompt (stable across all turns)
-  2-4. Last 3 non-system messages (rolling window)
+在对话前缀上缓存，多轮输入 token 成本约降 75%。最多 4 个 cache_control 断点：
+  1. 系统提示（各轮稳定）
+  2–4. 最近 3 条非 system 消息（滚动窗口）
 
-Pure functions -- no class state, no AIAgent dependency.
+纯函数，无类状态，不依赖 AIAgent。
 """
 
 import copy

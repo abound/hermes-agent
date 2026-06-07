@@ -1,7 +1,6 @@
-"""Auto-generate short session titles from the first user/assistant exchange.
+"""根据首轮用户/助手交换自动生成短会话标题。
 
-Runs asynchronously after the first response is delivered so it never
-adds latency to the user-facing reply.
+在首条回复交付后异步运行，不增加用户可见延迟。
 """
 
 import logging

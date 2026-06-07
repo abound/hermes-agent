@@ -1,4 +1,4 @@
-"""Helpers for optional cheap-vs-strong model routing."""
+"""可选「便宜模型 vs 强模型」路由的辅助函数。"""
 
 from __future__ import annotations
 

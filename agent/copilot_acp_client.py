@@ -1,9 +1,7 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI 兼容封装：将 Hermes 请求转发到 ``copilot --acp``。
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+让 Hermes 把 GitHub Copilot ACP 当作 chat 后端；每次请求启动短生命周期
+ACP 会话，整段对话作为单 prompt 发送，收集文本块并转回 OpenAI 客户端期望的最小结构。
 """
 
 from __future__ import annotations

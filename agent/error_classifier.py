@@ -1,12 +1,7 @@
-"""API error classification for smart failover and recovery.
+"""API 错误分类 —— 智能 failover 与恢复。
 
-Provides a structured taxonomy of API errors and a priority-ordered
-classification pipeline that determines the correct recovery action
-(retry, rotate credential, fallback to another provider, compress
-context, or abort).
-
-Replaces scattered inline string-matching with a centralized classifier
-that the main retry loop in run_agent.py consults for every API failure.
+结构化错误分类 + 优先级流水线，决定重试、轮换凭证、换 provider、
+压缩上下文或中止。集中替代 run_agent.py 主重试循环里分散的字符串匹配。
 """
 
 from __future__ import annotations

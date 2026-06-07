@@ -1,33 +1,16 @@
-"""Abstract base class for pluggable memory providers.
+"""可插拔记忆 provider 的抽象基类。
 
-Memory providers give the agent persistent recall across sessions. One
-external provider is active at a time alongside the always-on built-in
-memory (MEMORY.md / USER.md). The MemoryManager enforces this limit.
+记忆 provider 让 Agent 跨会话保持回忆。内置 MEMORY.md / USER.md 始终启用；
+外部 provider（Honcho、Mem0 等）同时最多 1 个，由 MemoryManager 强制。
 
-Built-in memory is always active as the first provider and cannot be removed.
-External providers (Honcho, Hindsight, Mem0, etc.) are additive — they never
-disable the built-in store. Only one external provider runs at a time to
-prevent tool schema bloat and conflicting memory backends.
+注册：BuiltinMemoryProvider 始终存在；插件放在 plugins/memory/<name>/。
 
-Registration:
-  1. Built-in: BuiltinMemoryProvider — always present, not removable.
-  2. Plugins: Ship in plugins/memory/<name>/, activated by memory.provider config.
+生命周期（由 MemoryManager / run_agent 调用）：
+  initialize / system_prompt_block / prefetch / sync_turn /
+  get_tool_schemas / handle_tool_call / shutdown
 
-Lifecycle (called by MemoryManager, wired in run_agent.py):
-  initialize()          — connect, create resources, warm up
-  system_prompt_block()  — static text for the system prompt
-  prefetch(query)        — background recall before each turn
-  sync_turn(user, asst)  — async write after each turn
-  get_tool_schemas()     — tool schemas to expose to the model
-  handle_tool_call()     — dispatch a tool call
-  shutdown()             — clean exit
-
-Optional hooks (override to opt in):
-  on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
-  on_session_end(messages)               — end-of-session extraction
-  on_pre_compress(messages) -> str       — extract before context compression
-  on_memory_write(action, target, content) — mirror built-in memory writes
-  on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
+可选钩子：on_turn_start、on_session_end、on_pre_compress、
+on_memory_write、on_delegation。
 """
 
 from __future__ import annotations

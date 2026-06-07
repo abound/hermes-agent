@@ -1,3 +1,9 @@
+"""用户消息中的 @ 引用解析与展开。
+
+支持 @file:、@folder:、@git:、@url:、@diff、@staged 等，将引用转为可读上下文；
+拦截 .ssh、.aws 等敏感路径。
+"""
+
 from __future__ import annotations
 
 import asyncio

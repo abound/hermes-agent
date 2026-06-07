@@ -1,7 +1,6 @@
-"""System prompt assembly -- identity, platform hints, skills index, context files.
+"""系统提示词组装 —— 身份、平台提示、技能索引、上下文文件。
 
-All functions are stateless. AIAgent._build_system_prompt() calls these to
-assemble pieces, then combines them with memory and ephemeral prompts.
+均为无状态函数；AIAgent._build_system_prompt() 调用后，再与记忆、临时提示合并。
 """
 
 import json

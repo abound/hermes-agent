@@ -1,28 +1,14 @@
-"""Abstract base class for pluggable context engines.
+"""可插拔上下文引擎的抽象基类。
 
-A context engine controls how conversation context is managed when
-approaching the model's token limit. The built-in ContextCompressor
-is the default implementation. Third-party engines (e.g. LCM) can
-replace it via the plugin system or by being placed in the
-``plugins/context_engine/<name>/`` directory.
+上下文引擎在接近模型 token 上限时管理对话上下文。默认实现为 ContextCompressor；
+第三方引擎（如 LCM）可通过插件或 ``plugins/context_engine/<name>/`` 替换。
 
-Selection is config-driven: ``context.engine`` in config.yaml.
-Default is ``"compressor"`` (the built-in). Only one engine is active.
+由 config.yaml 的 ``context.engine`` 选择，默认 ``compressor``，同时仅一个引擎生效。
 
-The engine is responsible for:
-  - Deciding when compaction should fire
-  - Performing compaction (summarization, DAG construction, etc.)
-  - Optionally exposing tools the agent can call (e.g. lcm_grep)
-  - Tracking token usage from API responses
+职责：何时压缩、如何压缩、可选暴露工具（如 lcm_grep）、跟踪 API usage。
 
-Lifecycle:
-  1. Engine is instantiated and registered (plugin register() or default)
-  2. on_session_start() called when a conversation begins
-  3. update_from_response() called after each API response with usage data
-  4. should_compress() checked after each turn
-  5. compress() called when should_compress() returns True
-  6. on_session_end() called at real session boundaries (CLI exit, /reset,
-     gateway session expiry) — NOT per-turn
+生命周期：实例化 → on_session_start → update_from_response → should_compress
+→ compress → on_session_end（真实会话边界，非每轮）。
 """
 
 from abc import ABC, abstractmethod

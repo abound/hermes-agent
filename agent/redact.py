@@ -1,10 +1,7 @@
-"""Regex-based secret redaction for logs and tool output.
+"""基于正则的密钥脱敏（日志与工具输出）。
 
-Applies pattern matching to mask API keys, tokens, and credentials
-before they reach log files, verbose output, or gateway logs.
-
-Short tokens (< 18 chars) are fully masked. Longer tokens preserve
-the first 6 and last 4 characters for debuggability.
+写入日志、verbose 或 gateway 前掩码 API Key、token 等。
+短 token（<18 字符）全掩码；较长 token 保留前 6 + 后 4 位便于调试。
 """
 
 import logging

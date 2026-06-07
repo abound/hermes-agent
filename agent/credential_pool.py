@@ -1,4 +1,4 @@
-"""Persistent multi-credential pool for same-provider failover."""
+"""同一 provider 下的持久化多凭证池（failover 用）。"""
 
 from __future__ import annotations
 

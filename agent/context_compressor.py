@@ -1,16 +1,15 @@
-"""Automatic context window compression for long conversations.
+"""长对话的自动上下文窗口压缩。
 
-Self-contained class with its own OpenAI client for summarization.
-Uses auxiliary model (cheap/fast) to summarize middle turns while
-protecting head and tail context.
+自包含类，自带 OpenAI 客户端用于摘要；用便宜的辅助模型摘要中间轮次，
+保护对话头尾。
 
-Improvements over v1:
-  - Structured summary template (Goal, Progress, Decisions, Files, Next Steps)
-  - Iterative summary updates (preserves info across multiple compactions)
-  - Token-budget tail protection instead of fixed message count
-  - Tool output pruning before LLM summarization (cheap pre-pass)
-  - Scaled summary budget (proportional to compressed content)
-  - Richer tool call/result detail in summarizer input
+相对 v1 的改进：
+  - 结构化摘要模板（目标、进度、决策、文件、下一步）
+  - 迭代更新摘要（多次压缩仍保留信息）
+  - 按 token 预算保护尾部（非固定消息条数）
+  - 摘要前裁剪工具输出（廉价预处理）
+  - 摘要预算随被压缩内容缩放
+  - 摘要输入含更丰富的 tool call/result 细节
 """
 
 import logging

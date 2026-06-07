@@ -1,8 +1,7 @@
-"""Trajectory saving utilities and static helpers.
+"""轨迹保存工具与静态辅助函数。
 
-_convert_to_trajectory_format stays as an AIAgent method (batch_runner.py
-calls agent._convert_to_trajectory_format). Only the static helpers and
-the file-write logic live here.
+_convert_to_trajectory_format 仍为 AIAgent 方法（batch_runner 调用）；
+本模块仅含静态 helper 与文件写入逻辑。
 """
 
 import json

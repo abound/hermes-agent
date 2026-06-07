@@ -1,7 +1,6 @@
-"""Model metadata, context lengths, and token estimation utilities.
+"""模型元数据、上下文长度与 token 粗估工具。
 
-Pure utility functions with no AIAgent dependency. Used by ContextCompressor
-and run_agent.py for pre-flight context checks.
+纯工具函数，不依赖 AIAgent；供 ContextCompressor 与 run_agent 预检上下文使用。
 """
 
 import logging

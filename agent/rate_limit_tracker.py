@@ -1,23 +1,9 @@
-"""Rate limit tracking for inference API responses.
+"""推理 API 响应的限流跟踪。
 
-Captures x-ratelimit-* headers from provider responses and provides
-formatted display for the /usage slash command.  Currently supports
-the Nous Portal header format (also used by OpenRouter and OpenAI-compatible
-APIs that follow the same convention).
+从 provider 响应头解析 x-ratelimit-*，供 /usage 命令展示。
+当前支持 Nous Portal 头格式（OpenRouter 等兼容 API 亦同）。
 
-Header schema (12 headers total):
-    x-ratelimit-limit-requests          RPM cap
-    x-ratelimit-limit-requests-1h       RPH cap
-    x-ratelimit-limit-tokens            TPM cap
-    x-ratelimit-limit-tokens-1h         TPH cap
-    x-ratelimit-remaining-requests      requests left in minute window
-    x-ratelimit-remaining-requests-1h   requests left in hour window
-    x-ratelimit-remaining-tokens        tokens left in minute window
-    x-ratelimit-remaining-tokens-1h     tokens left in hour window
-    x-ratelimit-reset-requests          seconds until minute request window resets
-    x-ratelimit-reset-requests-1h       seconds until hour request window resets
-    x-ratelimit-reset-tokens            seconds until minute token window resets
-    x-ratelimit-reset-tokens-1h         seconds until hour token window resets
+共 12 个头：RPM/RPH/TPM/TPH 的上限、剩余量、重置秒数（分钟窗 + 小时窗）。
 """
 
 from __future__ import annotations

@@ -1,45 +1,23 @@
-"""Shared auxiliary client router for side tasks.
+"""辅助 LLM 客户端路由器（side task 共用）。
 
-Provides a single resolution chain so every consumer (context compression,
-session search, web extraction, vision analysis, browser vision) picks up
-the best available backend without duplicating fallback logic.
+统一解析链，让压缩、会话搜索、网页提取、视觉分析等消费者共用同一套
+fallback 逻辑，避免重复实现。
 
-Resolution order for text tasks (auto mode):
+文本任务（auto 模式）解析顺序：
   1. OpenRouter  (OPENROUTER_API_KEY)
-  2. Nous Portal (~/.hermes/auth.json active provider)
-  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
-     wrapped to look like a chat.completions client)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  2. Nous Portal (~/.hermes/auth.json 当前 provider)
+  3. 自定义端点 (config.yaml model.base_url + OPENAI_API_KEY)
+  4. Codex OAuth (Responses API，包装成 chat.completions 客户端)
+  5. 原生 Anthropic
+  6. 直连 API Key provider (z.ai/GLM, Kimi, MiniMax 等)
   7. None
 
-Resolution order for vision/multimodal tasks (auto mode):
-  1. Selected main provider, if it is one of the supported vision backends below
-  2. OpenRouter
-  3. Nous Portal
-  4. Codex OAuth (gpt-5.3-codex supports vision via Responses API)
-  5. Native Anthropic
-  6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
-  7. None
+视觉/多模态任务（auto 模式）解析顺序：
+  1. 主 provider（若为支持的视觉后端）
+  2. OpenRouter → 3. Nous → 4. Codex → 5. Anthropic → 6. 自定义端点 → 7. None
 
-Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
-CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task.
-Default "auto" follows the chains above.
-
-Per-task model overrides (e.g. AUXILIARY_VISION_MODEL,
-AUXILIARY_WEB_EXTRACT_MODEL) let callers use a different model slug
-than the provider's default.
-
-Per-task direct endpoint overrides (e.g. AUXILIARY_VISION_BASE_URL,
-AUXILIARY_VISION_API_KEY) let callers route a specific auxiliary task to a
-custom OpenAI-compatible endpoint without touching the main model settings.
-
-Payment / credit exhaustion fallback:
-  When a resolved provider returns HTTP 402 or a credit-related error,
-  call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+可按任务覆盖 provider / model / base_url（环境变量或配置）。
+402 或余额耗尽时 call_llm() 会自动尝试链上下一个 provider。
 """
 
 import json
